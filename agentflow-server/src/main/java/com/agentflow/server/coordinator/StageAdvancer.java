@@ -23,8 +23,8 @@ import java.util.stream.Collectors;
 
 /**
  * 子任务落定后的唯一入口(结果回传、超时兜底两条触发源共用):
- * 当前全部落定且任务类型有下一阶段 → 同一事务内建下一阶段子任务并调大 total,提交后再分发;
- * 否则交 {@link TaskFinalizer} 判终态。
+ * 当前全部落定(或者任务类型声明了 {@link TaskDecomposer#advancesEarly})且任务类型有下一阶段
+ * → 同一事务内建下一阶段子任务并调大 total,提交后再分发;否则交 {@link TaskFinalizer} 判终态。
  *
  * <p>并发:计数累加是对 task 行的 UPDATE,持行锁到事务提交,多个结果并发回来时串行化;
  * 只有最后一个看到 done+failed==total,所以下一阶段只会创建一次。
@@ -56,16 +56,17 @@ public class StageAdvancer {
 
     public void onSettled(Long taskId) {
         TaskEntity task = taskMapper.selectById(taskId);
-        if (task.getSubtaskDone() + task.getSubtaskFailed() == task.getSubtaskTotal()) {
-            TaskDecomposer decomposer = decomposers.get(task.getType());
-            if (decomposer != null) {
-                List<SubtaskEntity> subs = subtaskMapper.selectList(new QueryWrapper<SubtaskEntity>()
-                        .eq("task_id", taskId).orderByAsc("seq"));
-                List<SubtaskDef> next = decomposer.nextStage(task, subs);
-                if (!next.isEmpty()) {
-                    advance(task, next);
-                    return;
-                }
+        TaskDecomposer decomposer = decomposers.get(task.getType());
+        boolean allSettled = task.getSubtaskDone() + task.getSubtaskFailed() == task.getSubtaskTotal();
+        // 一般是全部落定才问下一阶段;任务类型声明了 advancesEarly 的,每落定一个子任务就问一次
+        // (讲次摄入:挑帧完成就开始识别,不等转写)。两种情况都在 task 行锁之内,同一个任务的落定是串行的。
+        if (decomposer != null && (allSettled || decomposer.advancesEarly())) {
+            List<SubtaskEntity> subs = subtaskMapper.selectList(new QueryWrapper<SubtaskEntity>()
+                    .eq("task_id", taskId).orderByAsc("seq"));
+            List<SubtaskDef> next = decomposer.nextStage(task, subs);
+            if (!next.isEmpty()) {
+                advance(task, next);
+                return;
             }
         }
         taskFinalizer.finalizeIfAllSettled(taskId);

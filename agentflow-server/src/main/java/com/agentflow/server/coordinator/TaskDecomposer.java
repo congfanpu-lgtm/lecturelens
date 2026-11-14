@@ -21,6 +21,15 @@ public interface TaskDecomposer {
         return List.of();
     }
 
+    /**
+     * true:不等当前所有子任务落定,每落定一个子任务就问一次 {@link #nextStage}。
+     * 用于一个任务里有互不相干的几条线(讲次摄入:转写占显卡,挑帧和识别占 CPU),其中一条线的下一步不该等另一条线。
+     * 这样的 nextStage 会被问很多次,必须自己保证同一批子任务只建一次。同一个任务的落定是串行处理的(见 StageAdvancer)。
+     */
+    default boolean advancesEarly() {
+        return false;
+    }
+
     /** 全部落定、即将进终态时调用:可按业务语义改判计数得出的终态。默认不改。 */
     default TaskStatus terminalStatus(TaskEntity task, List<SubtaskEntity> subs, TaskStatus computed) {
         return computed;

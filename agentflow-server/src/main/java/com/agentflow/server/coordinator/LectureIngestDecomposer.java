@@ -76,6 +76,13 @@ public class LectureIngestDecomposer implements TaskDecomposer {
         return List.of(new SubtaskDef(0, in.toString(), IMPORT));
     }
 
+    /** 转写和"挑帧 → 识别"是互不相干的两条线:挑帧一完成就开始识别,不等转写。所以每落定一个子任务这里就被问一次。 */
+    @Override
+    public boolean advancesEarly() {
+        return true;
+    }
+
+    /** 会被问很多次(见 {@link #advancesEarly}):每一步只在"它需要的都落定了、而且它自己还没建"时才返回。 */
     @Override
     public List<SubtaskDef> nextStage(TaskEntity task, List<SubtaskEntity> subs) {
         SubtaskEntity imported = find(subs, IMPORT);
@@ -88,29 +95,29 @@ public class LectureIngestDecomposer implements TaskDecomposer {
         String mediaKey = media.path("mediaKey").asText();
 
         SubtaskEntity transcribed = find(subs, TRANSCRIBE);
-        if (transcribed == null) {   // 转写占显卡、截帧占 CPU,互不依赖,并行
+        if (transcribed == null) {   // 转写占显卡、挑帧占 CPU,互不依赖,并行
             String in = objectMapper.createObjectNode().put("lectureId", lectureId).put("mediaKey", mediaKey).toString();
             return List.of(new SubtaskDef(1, in, TRANSCRIBE), new SubtaskDef(2, in, FRAMES));
         }
-        if (!completed(transcribed)) {
+        // 挑帧说有几批,就建几个识别子任务。引擎按子任务编号轮流分到各个分区,所以一讲的各批自然散到各个 worker。
+        SubtaskEntity picked = find(subs, FRAMES);
+        List<SubtaskEntity> batches = subs.stream().filter(s -> OCR.equals(s.getKind())).toList();
+        int wanted = completed(picked) ? json(picked.getOutput()).path("batches").asInt(0) : 0;
+        if (wanted > 0 && batches.isEmpty() && !failed(transcribed)) {   // 转写已经失败:整讲失败,不用再识别
+            List<SubtaskDef> next = new ArrayList<>();
+            for (int n = 0; n < wanted; n++) {
+                String in = objectMapper.createObjectNode().put("lectureId", lectureId).put("mediaKey", mediaKey)
+                        .put("batch", n).toString();
+                next.add(new SubtaskDef(OCR_FIRST_SEQ + n, in, OCR));
+            }
+            return next;
+        }
+        // 建索引要等两条线都到头:转写成功,挑帧和各批识别都落定
+        if (!completed(transcribed) || !settled(picked) || !batches.stream().allMatch(LectureIngestDecomposer::settled)) {
             return List.of();
         }
         SubtaskEntity indexed = find(subs, INDEX);
         if (indexed == null) {
-            // 挑帧说有几批,就建几个识别子任务。引擎按子任务编号轮流分到各个分区,所以一讲的各批自然散到各个 worker。
-            // 识别排在转写之后:和转写放进同一阶段的话,转写的消息会排在别的讲的识别批次后面,显卡空等。
-            SubtaskEntity picked = find(subs, FRAMES);
-            List<SubtaskEntity> batches = subs.stream().filter(s -> OCR.equals(s.getKind())).toList();
-            int wanted = completed(picked) ? json(picked.getOutput()).path("batches").asInt(0) : 0;
-            if (wanted > 0 && batches.isEmpty()) {
-                List<SubtaskDef> next = new ArrayList<>();
-                for (int n = 0; n < wanted; n++) {
-                    String in = objectMapper.createObjectNode().put("lectureId", lectureId).put("mediaKey", mediaKey)
-                            .put("batch", n).toString();
-                    next.add(new SubtaskDef(OCR_FIRST_SEQ + n, in, OCR));
-                }
-                return next;
-            }
             ObjectNode in = objectMapper.createObjectNode()
                     .put("courseId", payload.path("courseId").asLong())
                     .put("lectureId", lectureId)
@@ -184,6 +191,14 @@ public class LectureIngestDecomposer implements TaskDecomposer {
 
     private static boolean completed(SubtaskEntity s) {
         return s != null && SubtaskStatus.COMPLETED.name().equals(s.getStatus());
+    }
+
+    private static boolean failed(SubtaskEntity s) {
+        return s != null && SubtaskStatus.FAILED.name().equals(s.getStatus());
+    }
+
+    private static boolean settled(SubtaskEntity s) {
+        return completed(s) || failed(s);
     }
 
     private static String cut(String s, int max) {

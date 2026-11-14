@@ -106,6 +106,40 @@ class LectureIngestDecomposerTest {
         }
     }
 
+    private static SubtaskEntity running(int seq, String kind) {
+        return sub(seq, kind, "DISPATCHED", null, null);
+    }
+
+    @Test
+    void batchesStartAsSoonAsThePickIsDoneWithoutWaitingForTheTranscription() throws Exception {
+        assertTrue(d.advancesEarly(), "每落定一个子任务就要被问一次,不然识别只能等转写完了才开始");
+        List<SubtaskEntity> subs = through(1);
+        subs.add(running(1, "LEC_TRANSCRIBE"));
+        subs.add(ok(2, "LEC_FRAMES", "{\"candidates\":45,\"batches\":3,\"cached\":false}"));
+        List<SubtaskDef> next = d.nextStage(task("RUNNING"), subs);
+        assertEquals(List.of("LEC_OCR", "LEC_OCR", "LEC_OCR"), next.stream().map(SubtaskDef::kind).toList());
+    }
+
+    @Test
+    void nothingNewWhileAStepItNeedsIsStillRunning() throws Exception {
+        String three = "{\"candidates\":45,\"batches\":3,\"cached\":false}";
+        List<SubtaskEntity> subs = through(1);                       // 转写在跑,各批已经建过了:不能再建一遍
+        subs.addAll(List.of(running(1, "LEC_TRANSCRIBE"), ok(2, "LEC_FRAMES", three),
+                running(10, "LEC_OCR"), running(11, "LEC_OCR"), running(12, "LEC_OCR")));
+        assertTrue(d.nextStage(task("RUNNING"), subs).isEmpty());
+
+        subs = through(1);                                           // 各批都识别完了,转写还在跑:索引要等逐字稿
+        subs.addAll(List.of(running(1, "LEC_TRANSCRIBE"), ok(2, "LEC_FRAMES", three), batch(0), batch(1), batch(2)));
+        assertTrue(d.nextStage(task("RUNNING"), subs).isEmpty());
+
+        subs = through(2);                                           // 转写完了,挑帧还在跑
+        subs.add(running(2, "LEC_FRAMES"));
+        assertTrue(d.nextStage(task("RUNNING"), subs).isEmpty());
+
+        subs = picked(batch(0), batch(1), running(12, "LEC_OCR"));   // 转写完了,还有一批没识别完
+        assertTrue(d.nextStage(task("RUNNING"), subs).isEmpty());
+    }
+
     @Test
     void theIndexWaitsForEveryBatch() throws Exception {
         List<SubtaskDef> next = d.nextStage(task("RUNNING"), picked(batch(0), batch(1), batch(2)));

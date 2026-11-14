@@ -92,6 +92,10 @@ class LectureIngestFlowTest {
         return all.stream().map(SubtaskEntity::getId).toList();
     }
 
+    private int dispatchedAllCount(String kind) {
+        return subtaskMapper.selectList(new QueryWrapper<SubtaskEntity>().eq("task_id", taskId).eq("kind", kind)).size();
+    }
+
     private boolean none(String kind) {
         return subtaskMapper.selectList(new QueryWrapper<SubtaskEntity>().eq("task_id", taskId).eq("kind", kind)).isEmpty();
     }
@@ -102,13 +106,14 @@ class LectureIngestFlowTest {
         long transcribe = dispatched("LEC_TRANSCRIBE");
         long frames = dispatched("LEC_FRAMES");
         ok(frames, "{\"candidates\":25,\"batches\":2,\"cached\":false}");
-        assertTrue(none("LEC_OCR"), "转写还没落定,不进下一阶段");
-        ok(transcribe, "{\"utterances\":1298,\"cached\":false}");
         List<Long> batches = dispatchedAll("LEC_OCR");
-        assertEquals(2, batches.size(), "挑帧说有 2 批");
+        assertEquals(2, batches.size(), "挑帧一完成就开始识别,不等转写(转写占显卡,识别占 CPU)");
         ok(batches.get(1), "{\"batch\":1,\"frames\":5,\"cached\":false}");
-        assertTrue(none("LEC_INDEX"), "还有一批没识别完,不能开始建索引");
         ok(batches.get(0), "{\"batch\":0,\"frames\":20,\"cached\":false}");
+        assertTrue(none("LEC_INDEX"), "各批都识别完了,但转写还没落定,不能开始建索引");
+        assertEquals("RUNNING", taskMapper.selectById(taskId).getStatus());
+        ok(transcribe, "{\"utterances\":1298,\"cached\":false}");
+        assertEquals(2, dispatchedAllCount("LEC_OCR"), "各批只建一次");
         long index = dispatched("LEC_INDEX");
         assertTrue(subtaskMapper.selectById(index).getInput().contains("\"withSlides\": true")
                 || subtaskMapper.selectById(index).getInput().contains("\"withSlides\":true"));
