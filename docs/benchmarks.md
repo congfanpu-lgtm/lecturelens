@@ -421,15 +421,22 @@ segments and 1,023 slide segments.
 
 The whole-course run above showed lectures fighting for the CPU while their slides were read. Two limits were
 added to the media service: at most `MEDIA_OCR_SLOTS` OCR calls at once across all lectures, and
-`MEDIA_OCR_THREADS` threads per call. Measurement: the frames step of eight lectures started at the same
-moment, 1,259 OCR calls in total, single runs.
+`MEDIA_OCR_THREADS` as the size of the OCR engine's thread pools. Measurement: the frames step of eight
+lectures started at the same moment, 1,259 OCR calls in total, single runs.
 
-| Calls at once × threads per call | Wall time | Load average |
+| Calls at once × thread-pool size | Wall time | Load average |
 |---|---|---|
-| no limit, one thread per core per call (the old behaviour) | 1,243 s | 59 |
+| no limit on calls, pools of one thread per core (the old behaviour) | 1,243 s | 59 |
 | 12 × 2 | 541 s | 5 |
 | 6 × 4 | 455 s | 12 |
-| **3 × 8 (default: 8 threads, calls at once = cores ÷ 8)** | **405 s** | 26 |
+| **3 × 8 (default: pools of 8, calls at once = cores ÷ 8)** | **405 s** | 26 |
+
+**Correction (2026-11-14, from the code review).** An earlier version of this section called the second number
+"threads per call" and gave the rule "calls × threads ≈ cores". That is not what the code does: there is one OCR
+engine, shared by all calls, so the thread pools are shared too and 12 × 2 does not mean 24 busy threads (its
+load average of 5 says as much). The wall times above stand; the explanation of why 3 × 8 is the fastest does
+not, and was never measured. Giving each slot its own engine, which would make the rule true, has not been
+tried; it is the first measurement of the OCR fan-out work.
 
 - Limiting is three times faster than not limiting (1,243 s → 405 s) for the same work.
 - The 3 × 8 run shared the machine with a test run for about two minutes, so it is, if anything, understated.

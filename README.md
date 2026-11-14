@@ -41,7 +41,7 @@ twice does no work the second time.
 | Slide OCR before and after dedup (2-hour lecture) | 974 → 263 OCR calls, 806 s → 238 s, no slide lost |
 | All 11 lectures of a course (12.7 h) added at once | all ingested, none failed; 929 speech and 1,023 slide segments |
 | Slide OCR of eight lectures at once, before and after the concurrency limit | 1,243 s → 405 s |
-| Worker killed mid-answer | another worker resumes from the checkpointed step; done and verified 51 s later |
+| Worker killed mid-answer | another worker resumes from the checkpointed step; done 51 s later (mock model and mock judge) |
 
 ![The course library: eleven lectures with the state and time of every step](docs/img/lecturelens-courses.jpg)
 

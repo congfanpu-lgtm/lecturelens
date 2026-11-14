@@ -56,7 +56,7 @@
 
 | kind | 输入 | 输出 |
 |---|---|---|
-| `QA_AGENT` | `{"courseId","question","history","lectures":[{"lectureId","seq","title","durationMs","mediaKey","concepts"}],"feedback":[{"text","reason"}]（补一轮时才有）,"model"}` | `{"question","notFound","note","claims":[{"text","evidence":[{"lectureId","seq","startMs","endMs","source","quote"}]}],"steps","toolCalls","usage"}` |
+| `QA_AGENT` | `{"courseId","question","history","lectures":[{"lectureId","seq","title","durationMs","mediaKey","concepts"}],"feedback":[{"text","reason"}],"kept":[{"text"}]（这两项补一轮时才有）,"model"}` | `{"question","notFound","claims":[{"text","evidence":[{"lectureId","seq","startMs","endMs","source","quote"} 或者 {"invalid":"看不懂的原因"}]}],"steps","toolCalls","usage"}` |
 | `QA_VERIFY` | `{"courseId","question","lectures":[…同上，不带 concepts],"claims":[…QA_AGENT 的输出],"model"}` | `{"claims":[…通过的],"dropped":[{"text","layer","reason"}],"usage"}` |
 
 **agent 的最终输出（模型写的）**
@@ -239,7 +239,7 @@
   - `nextStage`：`QA_AGENT` 成功 → `QA_VERIFY`（带 agent 的 `claims`；agent 说 `notFound` 或者没有结论时不建核验，任务结束）。`QA_VERIFY` 成功后，如果这是第一轮、被拿掉的结论不少于 1 条且超过总数的三分之一 → 再建一个 `QA_AGENT`（输入加 `feedback`：被拿掉的结论和原因）→ 它成功后再建 `QA_VERIFY`。第二轮之后不再补。任何一步失败 → 结束。
   - `terminalStatus`：最后一个落定的子任务成功 → `COMPLETED`；否则 `FAILED`。
 - 提问：`POST /api/v1/courses/{id}/questions` → `TaskSubmitService.submit("COURSE_QA", …)` → `{"taskUuid"}`；请求不对 400，课程不存在 404。
-- 取答案：`GET /api/v1/questions/{taskUuid}`：任务不存在或者不是 `COURSE_QA` → 404。视图见"接口约定"，由子任务的输出拼出来：`claims`/`dropped` 取最后一个成功的 `QA_VERIFY`；没有核验（`notFound`）时取最后一个 `QA_AGENT` 的 `notFound`；`rounds` 是成功的 `QA_AGENT` 个数；`toolCalls` 是各轮 agent 的合在一起；`usage` 是各步之和；`error` 是失败步骤的 `kind: 原因`。
+- 取答案：`GET /api/v1/questions/{taskUuid}`：任务不存在或者不是 `COURSE_QA` → 404。视图见"接口约定"，由子任务的输出拼出来（**2026-11-14 整体审查后改过**）：`claims` 是各轮成功的 `QA_VERIFY` 通过的结论合在一起（补一轮是补，不是重来；文字相同的只留一条）；`dropped` 取最后一个成功的 `QA_VERIFY`；一次核验都没有时 `notFound` 取第一个 `QA_AGENT` 自己的 `notFound`；`rounds` 是成功的 `QA_AGENT` 个数；`toolCalls` 是各轮 agent 的合在一起；`usage` 是各步之和；`error` 是失败步骤的 `kind: 原因`。第一轮核验过了、补的一轮没跑成：任务是 `PARTIAL_FAILED`，视图的 `status` 仍是 `COMPLETED`，给第一轮通过核验的结论，`error` 里说明补的一轮没跑成。
 - **全部结论两轮都被拿掉**时：`status=COMPLETED`、`claims` 为空、`dropped` 有内容、`notFound=false`。页面据此显示"没有能通过核验的结论"，不是一片空白。
 
 - [ ] 测试（先失败）：
