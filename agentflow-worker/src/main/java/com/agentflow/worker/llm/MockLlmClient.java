@@ -203,7 +203,8 @@ public class MockLlmClient implements LlmClient {
                 String text = line.group(2);
                 String name = "知识点 " + (arr.size() + 1);   // 先算名字:addObject 之后 size 已经加一了
                 arr.addObject().put("name", name).put("segment", segment)
-                        .put("summary", text.length() > 60 ? text.substring(0, 60) : text);
+                        .put("summary", text.length() > 60 ? text.substring(0, 60) : text)
+                        .put("quote", text.length() > 40 ? text.substring(0, 40).trim() : text);
             }
         }
         return new ChatResponse(out.toString(), null, null);

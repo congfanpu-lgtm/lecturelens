@@ -28,9 +28,10 @@ import java.util.Set;
 /**
  * 讲次摄入第 5 步:这一讲的知识点目录,每讲一次模型调用。
  *
- * <p>模型看到的是按时间编号的片段,输出"知识点 + 片段编号";时间由这里按编号查出来。
- * 模型写的任何时间都不会被采用,所以目录里不会出现这一讲里不存在的时间点。
- * 编号越界、没有名字的条目丢弃;一条能用的都没有就算这一步失败(会重试),不存一份空目录。
+ * <p>模型看到的是按时间编号的片段,输出"知识点 + 片段编号 + 那个片段里的一句原文";时间由这里按编号查出来。
+ * 模型写的任何时间都不会被采用,所以目录里不会出现这一讲里不存在的时间点;
+ * 引的原文必须真的在所引的片段里,所以知识点也不会被安到不相干的片段上。
+ * 编号越界、没有名字、原文对不上的条目丢弃;一条能用的都没有就算这一步失败(会重试),不存一份空目录。
  */
 @Component
 @RequiredArgsConstructor
@@ -46,7 +47,7 @@ public class LecConceptsProcessor implements SubtaskProcessor {
     private final LlmGateway gateway;
     private final LlmModelProperties props;
 
-    private record Concept(String name, long startMs, String summary) {
+    private record Concept(String name, long startMs, String summary, String quote) {
     }
 
     @Override
@@ -79,8 +80,15 @@ public class LecConceptsProcessor implements SubtaskProcessor {
             if (name.isEmpty() || !segment.isIntegralNumber() || segment.asInt() < 0 || segment.asInt() >= segments.size()) {
                 continue;
             }
+            // 和问答核验的第 2 层同一个标准:引的原话要真的在所引的片段里,否则这个知识点不是在这里讲的
+            String quote = c.path("quote").asText("").strip();
+            String normalized = TextUtil.normalize(quote);
+            if (normalized.length() < EvidenceChecker.MIN_QUOTE_CHARS
+                    || !TextUtil.normalize(segments.get(segment.asInt()).text()).contains(normalized)) {
+                continue;
+            }
             valid.add(new Concept(cut(name, MAX_NAME), segments.get(segment.asInt()).startMs(),
-                    cut(c.path("summary").asText("").strip(), MAX_SUMMARY)));
+                    cut(c.path("summary").asText("").strip(), MAX_SUMMARY), quote));
         }
         valid.sort(Comparator.comparingLong(Concept::startMs));   // 稳定排序:同一时间的保持模型给的顺序
         ObjectNode out = OM.createObjectNode();
@@ -88,7 +96,8 @@ public class LecConceptsProcessor implements SubtaskProcessor {
         Set<String> names = new HashSet<>();
         for (Concept c : valid) {
             if (concepts.size() < MAX_CONCEPTS && names.add(c.name())) {   // 同名只留最早的一条
-                concepts.addObject().put("name", c.name()).put("startMs", c.startMs()).put("summary", c.summary());
+                concepts.addObject().put("name", c.name()).put("startMs", c.startMs()).put("summary", c.summary())
+                        .put("quote", c.quote());
             }
         }
         if (concepts.isEmpty()) {

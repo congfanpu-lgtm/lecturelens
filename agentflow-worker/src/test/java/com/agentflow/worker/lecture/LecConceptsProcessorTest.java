@@ -57,7 +57,7 @@ class LecConceptsProcessorTest {
 
     @Test
     void theModelSeesNumberedSegmentsWithTheirTimes() throws Exception {
-        run("{\"concepts\":[{\"name\":\"Pre-training\",\"segment\":0,\"summary\":\"s\"}]}");
+        run("{\"concepts\":[{\"name\":\"Pre-training\",\"segment\":0,\"summary\":\"s\",\"quote\":\"Point 0. Point 1.\"}]}");
         ArgumentCaptor<ChatRequest> req = ArgumentCaptor.forClass(ChatRequest.class);
         verify(gateway).chat(req.capture());
         assertTrue(req.getValue().getMessages().get(0).getContent().startsWith(Prompts.CONCEPTS_TAG));
@@ -69,8 +69,8 @@ class LecConceptsProcessorTest {
 
     @Test
     void segmentNumbersBecomeStartTimesInOrder() throws Exception {
-        JsonNode out = run("{\"concepts\":[{\"name\":\"RLHF\",\"segment\":3,\"summary\":\"reward from people\"},"
-                + "{\"name\":\"Pre-training\",\"segment\":0,\"summary\":\"next token prediction\"}]}");
+        JsonNode out = run("{\"concepts\":[{\"name\":\"RLHF\",\"segment\":3,\"summary\":\"reward from people\",\"quote\":\"Point 9. Point 10.\"},"
+                + "{\"name\":\"Pre-training\",\"segment\":0,\"summary\":\"next token prediction\",\"quote\":\"point 0.  POINT 1.\"}]}");
         JsonNode c = out.get("concepts");
         assertEquals(2, c.size());
         assertEquals("Pre-training", c.get(0).get("name").asText());
@@ -78,15 +78,18 @@ class LecConceptsProcessorTest {
         assertEquals("RLHF", c.get(1).get("name").asText());
         assertEquals(180_000, c.get(1).get("startMs").asLong());
         assertEquals("reward from people", c.get(1).get("summary").asText());
+        assertEquals("Point 9. Point 10.", c.get(1).get("quote").asText());
+        assertEquals("point 0.  POINT 1.", c.get(0).get("quote").asText(), "大小写和空白不同不算编造,原样保留模型写的");
         assertTrue(out.has("usage"));
     }
 
     @Test
     void dropsConceptsThatPointOutsideTheLecture() throws Exception {
-        JsonNode c = run("{\"concepts\":[{\"name\":\"Good\",\"segment\":1,\"summary\":\"s\"},"
+        JsonNode c = run("{\"concepts\":[{\"name\":\"Good\",\"segment\":1,\"summary\":\"s\",\"quote\":\"Point 3. Point 4.\"},"
                 + "{\"name\":\"Too far\",\"segment\":999,\"summary\":\"s\"},{\"name\":\"Negative\",\"segment\":-1,\"summary\":\"s\"},"
                 + "{\"name\":\"  \",\"segment\":2,\"summary\":\"s\"},{\"name\":\"No number\",\"summary\":\"s\"},"
-                + "{\"name\":\"Good\",\"segment\":5,\"summary\":\"again, later\"},{\"name\":\"Text number\",\"segment\":\"2\",\"summary\":\"s\"}]}")
+                + "{\"name\":\"Good\",\"segment\":5,\"summary\":\"again, later\",\"quote\":\"Point 15. Point 16.\"},"
+                + "{\"name\":\"Text number\",\"segment\":\"2\",\"summary\":\"s\",\"quote\":\"Point 6. Point 7.\"}]}")
                 .get("concepts");
         assertEquals(1, c.size());
         assertEquals("Good", c.get(0).get("name").asText());
@@ -104,8 +107,23 @@ class LecConceptsProcessorTest {
     void keepsAtMostThirty() throws Exception {
         StringBuilder sb = new StringBuilder("{\"concepts\":[");
         for (int i = 0; i < 40; i++) {
-            sb.append(i == 0 ? "" : ",").append("{\"name\":\"c").append(i).append("\",\"segment\":0,\"summary\":\"s\"}");
+            sb.append(i == 0 ? "" : ",").append("{\"name\":\"c").append(i)
+                    .append("\",\"segment\":0,\"summary\":\"s\",\"quote\":\"Point 0. Point 1.\"}");
         }
         assertEquals(30, run(sb.append("]}").toString()).get("concepts").size());
+    }
+
+    @Test
+    void dropsAConceptWhoseQuoteIsNotInItsSegment() throws Exception {
+        // 时间点是真的(片段 0 存在),但引的原话其实在片段 3 里:这个知识点不是在这里讲的
+        JsonNode c = run("{\"concepts\":[{\"name\":\"Misplaced\",\"segment\":0,\"summary\":\"s\",\"quote\":\"Point 9. Point 10.\"},"
+                + "{\"name\":\"No quote\",\"segment\":1,\"summary\":\"s\"},"
+                + "{\"name\":\"Too short\",\"segment\":1,\"summary\":\"s\",\"quote\":\"Point 3.\"},"
+                + "{\"name\":\"Made up\",\"segment\":2,\"summary\":\"s\",\"quote\":\"something nobody said in this lecture\"},"
+                + "{\"name\":\"Real\",\"segment\":2,\"summary\":\"s\",\"quote\":\"Point 6. Point 7.\"}]}").get("concepts");
+        assertEquals(1, c.size());
+        assertEquals("Real", c.get(0).get("name").asText());
+        assertThrows(IllegalStateException.class, () -> run("{\"concepts\":[{\"name\":\"Misplaced\",\"segment\":0,"
+                + "\"summary\":\"s\",\"quote\":\"Point 9. Point 10.\"}]}"));
     }
 }
