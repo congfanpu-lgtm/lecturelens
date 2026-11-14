@@ -691,5 +691,127 @@ voice-activity settings were left as they are.
 asks for it). It would mean downloading 12.7 hours of video from YouTube twice. The other two stages are known:
 transcription does not get faster with more workers (section 7), and the OCR does not on this machine (section 10).
 
-Not done yet, because they need the user or a real model: the question set, the real runs, grading, the judge's
-calibration against 100 hand-labelled pairs, and the comparison with a notebook product.
+The question set, the real runs and the grading are in section 12. Still not done, because they need a person:
+the judge's calibration against 100 hand-labelled pairs, and the comparison with a notebook product.
+
+---
+
+## 12. Course Q&A with a real model (2026-11-14)
+
+The evaluation of the design's section 11, run once with a real model. Sections 9 and 11 used the mock model;
+this is the first time the answers, the judge and the grades came from a real one. Full tables:
+[`eval/results/course-haiku-v1.md`](../eval/results/course-haiku-v1.md).
+
+**Setup**
+
+- **Course**: the 11 lectures of section 8 (12.7 hours).
+- **Model**: `claude-haiku-5-5` with thinking disabled, for answering, for the judge and for grading.
+- **Questions**: 89, each with required points and gold time ranges — 60 about one lecture, 22 that need two or
+  three lectures, 7 that the course does not answer. **A model wrote them** (Claude Fable 5.2, from the
+  time-marked transcripts); nobody rewrote them. They were frozen before any system ran on them. Lecture 8 has
+  no questions: drafting for that lecture was stopped by the model provider's content safeguards (its subject
+  is biology) and was not redone. How the set was made and what the author was unsure about:
+  [`eval/course/questions.md`](../eval/course/questions.md).
+- **Systems**, all the same `COURSE_QA` task with different options:
+  S1 the full system (agent with tools, three verification layers, one repair round);
+  S2 a fixed pipeline (one search with 8 hits, one model call, the same verification);
+  S3 the agent without the judge (layers 1 and 2 only);
+  B1 every transcript of the course (speech only, about 200,000 tokens) in one model call, layers 1 and 2 only.
+- **Runs**: S1, S2 and S3 three rounds each on all 89 questions; B1 one round on every third question (30).
+  831 runs, none failed; 17.5 million input tokens, $4.75 at list price ($3.07 of it for the 30 B1 runs).
+- **Scoring**: per question the mean over the rounds, then the mean over questions. Differences are paired per
+  question with a bootstrap 95% interval. "Correct" is the share of a question's required points that the
+  answer states, judged point by point by the grader model — and the answer is only the claims that passed
+  verification. For a not-in-course question it is 1 if the system said it found nothing.
+
+**Results**
+
+| | S1 full | S2 one search | S3 no judge | B1 long context (30 questions) |
+|---|---|---|---|---|
+| Correct | 64% | 44% | 67% | 52% |
+| Correct, one-lecture questions | 69% | 47% | 73% | 49% |
+| Correct, cross-lecture questions | 46% | 24% | 51% | 49% (8 questions) |
+| Evidence falls in a gold time range | 97% | 79% | 96% | 86% |
+| The same for every lecture of a cross-lecture question | 41% | 14% | 47% | 25% (8 questions) |
+| Proposed claims removed by the code checks (no evidence, impossible time, quote not found) | 11% | 3% | 12% | 42% |
+| Proposed claims removed by the judge | 8% | 18% | no judge | no judge |
+| Claims left in the answer that the judge rejects when asked afterwards | — | — | 11% [8, 14] | 23% [12, 36] |
+| Not-in-course questions refused (7 questions) | 81% | 86% | 67% | 2 of 2 |
+| Answerable questions refused | 0% | 9% | 0% | 0% |
+| Input tokens per question, median | 20,171 | 3,855 | 16,314 | 200,662 |
+| Cost per question, median | $0.0029 | $0.0008 | $0.0023 | $0.102 |
+| Seconds per question, median / p90 | 10 / 16 | 5 / 6 | 8 / 11 | 5 / 8 |
+
+On the 30 questions B1 ran, S1 is 65% correct and S3 68%. A prompt of more than 100,000 tokens is billed on
+Haiku's higher rate card ($0.50 / $2.50 per million tokens instead of $0.10 / $0.50), which is why B1 costs 35
+times as much as S1 while reading 10 times as many tokens.
+
+**The three expectations written down before the run** (design, section 11)
+
+1. *"On cross-lecture questions S1 is correct more often than S2."* **Holds**: +22.2 points, interval
+   [+10.0, +34.0], 22 questions; on all questions +19.9 [+13.4, +26.3]. One search does not reach two lectures:
+   S2's evidence covers every lecture of a cross-lecture question 14% of the time against 41%, and it refused
+   9% of the questions the course does answer.
+2. *"S1 has a smaller share of unsupported claims than S3, without a clear drop in correctness."* **Holds as
+   far as the judge can be trusted.** Without the judge, 11% [8, 14] of the claims in S3's answers are ones the
+   judge rejects; with it they are gone. Correctness is 2.5 points lower with the judge, interval [−6.5, +1.6]:
+   no measurable loss, though a loss of up to 6.5 points is not excluded. S3's three rounds scored 64%, 71% and 65%,
+   so one round's swing is as large as this difference. How often the judge is right has not been measured (see below).
+3. *"The course is small enough that B1 will probably be as correct as S1; the case for S1 is cost, evidence
+   location and unsupported claims."* **The answer depends on whether proof is required.**
+   Counting only verified claims, B1 is lower: −12.5 points [−24.7, −1.6] in correctness and −13.1
+   [−27.4, −1.2] in evidence location, on 30 questions. Counting every claim the model proposed, verified or
+   not (an analysis added after the run, 28 questions), B1 is the *most* correct: 76% [67, 85] against 66%
+   [60, 73] for S1, difference +9.7 [+2.4, +16.8]. Verification costs S1 about 3 points and B1 27.
+   So the long context knows more and proves less; S1 is not "more accurate than a long context", it is
+   cheaper (35×) and its claims can be checked.
+
+**Why the long context fails verification: it does not copy.** Every speech quote the models proposed was
+compared with the transcript:
+
+| Quote | S1 (1,185 quotes) | B1 (127 quotes) |
+|---|---|---|
+| Found word for word at the cited time | 93.1% | 48.8% |
+| Word for word, but somewhere else in the lecture | 0.5% | 13.4% |
+| Differs only in punctuation | 1.0% | 4.7% |
+| Small edits (a filler word dropped, "…" for a skipped stretch) | 5.1% | 22.0% |
+| Reworded further | 0.3% | 11.0% |
+
+With 200,000 tokens in the prompt, Haiku cites the wrong minute or tidies the sentence in half of its quotes;
+with a few search results in front of it, it copies. Layer 2 accepts only a word-for-word quote at the cited
+time, so about four in ten of B1's rejected quotes are "small edits" a reader would accept. A more forgiving check
+would narrow the gap in expectation 3; this was not tried.
+
+**The judge.** Fifty verified claims were each given a real but unrelated sentence from another lecture as
+evidence: the judge rejected 50 of 50. That is the easy direction. Whether it is right on evidence that is
+related but does not support the claim needs human labels: 100 claim-and-evidence pairs are exported
+(`pairs.csv`) and **not labelled yet**, so the judge's accuracy, miss rate and false-alarm rate are unknown.
+Until then the 8% it removes from S1 and the 11% it would remove from S3 are its own opinion.
+
+**Not-in-course questions.** Seven questions, 21 runs per system: S1 refused 17, S2 18, S3 14. In 2 of S1's 4
+non-refusals the answer itself says that the course does not give what was asked and then adds what it does
+say; the rule (refused = "found nothing") counts them as failures. The other 2 answer a neighbouring question.
+Seven questions are too few to separate the systems (intervals in the results file).
+
+**What this does not show**
+
+- The questions come from a model of the same family as the systems, the grader is the same model as the
+  systems, and nobody checked the grades by hand. The absolute numbers (64% correct) are not comparable with
+  anything outside this run; the differences between systems are the result.
+- One course, one model, one run. B1 ran once on 30 questions, so its intervals are wide.
+- A gold range is one place where the answer is said, not every place: "every lecture of a cross-lecture
+  question" punishes an answer that cites another valid passage.
+- B1 saw speech only; S1 and S3 can also cite slides (14% of S1's kept evidence).
+- The analysis without verification and the quote comparison were added after seeing the results; they are
+  exploratory.
+- The second baseline of the design (a notebook product asked by hand) was not run.
+
+**Found on the way**
+
+- In the first smoke test the long-context call answered in prose instead of the JSON format, so every claim
+  counted as "no evidence". The two modes without tools now repeat the format after the question; B1's numbers
+  above are with that fix.
+- The grader once reasoned point by point instead of returning JSON and stopped the whole grading; a row that
+  cannot be parsed is now skipped and retried on the next run.
+- One of the seven not-in-course questions (an algorithm name) is on a slide although it is never spoken; the
+  questions were written from speech only.

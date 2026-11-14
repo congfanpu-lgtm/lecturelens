@@ -1,7 +1,7 @@
 # LectureLens
 
 [![CI](https://github.com/congfanpu-lgtm/lecturelens/actions/workflows/ci.yml/badge.svg)](https://github.com/congfanpu-lgtm/lecturelens/actions/workflows/ci.yml)
-· [中文](README.zh.md) · measurements: [`docs/benchmarks.md`](docs/benchmarks.md) sections 7 and 8
+· [中文](README.zh.md) · measurements: [`docs/benchmarks.md`](docs/benchmarks.md) sections 7 to 12
 
 **An AI learning platform for lecture recordings.** Paste the link of a lecture: LectureLens downloads it,
 transcribes it, reads the slides, cuts it into searchable segments and builds a concept directory. Then you can
@@ -15,8 +15,8 @@ second.
 | Ingest: download, transcription, slide OCR, segment index, concept directory | done, measured on the Berkeley Agentic AI MOOC (Fall 2025) recordings |
 | Course library page and lecture page | done |
 | Search across a course (dense + BM25, scoped to the course) | done |
-| Q&A agent whose every claim carries lecture, time range and quote; three-layer verification; Q&A page | done, so far exercised with the mock model only |
-| Public evaluation | not started |
+| Q&A agent whose every claim carries lecture, time range and quote; three-layer verification; Q&A page | done |
+| Evaluation: 89 questions, four systems, paired differences with intervals | first run done with Claude Haiku ([`docs/benchmarks.md`](docs/benchmarks.md) section 12); the questions were written by a model, the judge is not yet calibrated against human labels |
 
 ```mermaid
 flowchart LR
@@ -48,6 +48,14 @@ twice does no work the second time.
 | Three lectures added at once: when each lecture's slides were read, before and after transcription got its own topic | 223 / 320 / 342 s → 53 / 191 / 299 s; the time until all three are searchable does not move (about 340 s, the queue for one GPU) |
 | More OCR replicas on the same machine | no gain (1 replica 2.6 slides/s, 4 replicas 4.1, no replica 4.0): OCR throughput has a ceiling here, most likely memory bandwidth; several machines not measured |
 | Worker killed mid-answer | another worker resumes from the checkpointed step; done 51 s later (mock model and mock judge) |
+
+| Course Q&A, 89 questions written by a model, Claude Haiku, 831 runs (section 12) | |
+|---|---|
+| Agent against one search and one call, share of required points answered | 64% against 44%, +19.9 points [+13.4, +26.3]; on the 22 cross-lecture questions 46% against 24%, +22.2 [+10.0, +34.0] |
+| Evidence of the agent's answers falls in a gold time range | 97% of answerable questions (one search: 79%) |
+| With and without the judge | the judge removes 8% of the agent's claims; without it 11% [8, 14] of the claims left in the answer are ones it rejects; correctness −2.5 points [−6.5, +1.6], not separable from zero |
+| Against the whole course in one 200,000-token call (30 questions) | per question $0.0029 against $0.102 (35×); verified correctness 65% against 52%, −12.5 points [−24.7, −1.6] for the long context, because half of its quotes are not word for word at the cited time; **without requiring proof the long context is more correct** (76% against 66% of points; an analysis added after the run) |
+| Unrelated sentence swapped in as evidence | the judge rejected 50 of 50; its accuracy on harder cases is not measured yet |
 
 ![The course library: eleven lectures with the state and time of every step](docs/img/lecturelens-courses.jpg)
 

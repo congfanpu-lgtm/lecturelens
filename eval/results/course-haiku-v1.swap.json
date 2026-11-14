@@ -1,0 +1,8 @@
+{
+  "tried": 50,
+  "rejected": 50,
+  "accepted": 0,
+  "notJudged": 0,
+  "rejectionRate": 1.0,
+  "acceptedCases": []
+}
