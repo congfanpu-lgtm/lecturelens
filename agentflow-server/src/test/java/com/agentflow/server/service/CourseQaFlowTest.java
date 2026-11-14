@@ -145,6 +145,59 @@ class CourseQaFlowTest {
         assertFalse(a.get("notFound").asBoolean(), "不是课里没讲,是没有能通过核验的结论");
     }
 
+    private static final String ROUND_ONE = ",\"dropped\":[{\"text\":\"Claim B.\",\"layer\":2,\"reason\":\"引用的原文找不到\"},"
+            + "{\"text\":\"Claim C.\",\"layer\":3,\"reason\":\"原文没有说到这一点\"}],";
+
+    /** 第一轮:三条结论里 A 通过、B 和 C 被拿掉,于是进入补的一轮。返回任务 uuid。 */
+    private String firstRoundKeepsOnlyA() throws Exception {
+        String uuid = ask();
+        finish("QA_AGENT", agentOutput("Claim A.", "Claim B.", "Claim C."));
+        finish("QA_VERIFY", "{\"claims\":" + claims("Claim A.") + ROUND_ONE + USAGE + "}");
+        JsonNode second = OM.readTree(subs().get(2).getInput());
+        assertEquals("QA_AGENT", subs().get(2).getKind());
+        assertEquals("Claim A.", second.get("kept").get(0).get("text").asText(), "补的一轮要知道哪些已经通过了");
+        return uuid;
+    }
+
+    @Test
+    void theRepairRoundAddsToTheFirstRoundsAnswerInsteadOfReplacingIt() throws Exception {
+        String uuid = firstRoundKeepsOnlyA();
+        finish("QA_AGENT", agentOutput("Claim D."));
+        finish("QA_VERIFY", "{\"claims\":" + claims("Claim D.") + ",\"dropped\":[]," + USAGE + "}");
+        JsonNode a = questions.answer(uuid);
+        assertEquals("COMPLETED", a.get("status").asText());
+        assertEquals(2, a.get("claims").size(), "第一轮通过核验的 A 不能因为补了一轮就没了");
+        assertEquals("Claim A.", a.get("claims").get(0).get("text").asText());
+        assertEquals("Claim D.", a.get("claims").get(1).get("text").asText());
+        assertEquals(0, a.get("dropped").size());
+        assertEquals(2, a.get("rounds").asInt());
+        assertTrue(a.get("error").isNull());
+    }
+
+    @Test
+    void aRepairRoundThatAddsNothingKeepsTheFirstRoundsAnswer() throws Exception {
+        String uuid = firstRoundKeepsOnlyA();
+        finish("QA_AGENT", "{\"question\":\"what is rlhf\",\"notFound\":true,\"claims\":[],\"steps\":2,\"toolCalls\":[]," + USAGE + "}");
+        assertEquals("COMPLETED", taskMapper.selectById(taskId).getStatus());
+        JsonNode a = questions.answer(uuid);
+        assertEquals("COMPLETED", a.get("status").asText());
+        assertFalse(a.get("notFound").asBoolean(), "补的一轮没补上,不等于课里没讲");
+        assertEquals("Claim A.", a.get("claims").get(0).get("text").asText());
+        assertEquals(2, a.get("dropped").size(), "被拿掉的那两条照样列出来");
+    }
+
+    @Test
+    void aRepairRoundThatFailsKeepsTheFirstRoundsAnswer() throws Exception {
+        String uuid = firstRoundKeepsOnlyA();
+        results.handle(new ResultMessage(taskId, subs().get(2).getId(), false, null, "模型服务不可用"));
+        assertEquals("PARTIAL_FAILED", taskMapper.selectById(taskId).getStatus());
+        JsonNode a = questions.answer(uuid);
+        assertEquals("COMPLETED", a.get("status").asText());
+        assertEquals("Claim A.", a.get("claims").get(0).get("text").asText());
+        assertEquals(2, a.get("dropped").size());
+        assertTrue(a.get("error").asText().contains("QA_AGENT: 模型服务不可用"), a.get("error").asText());
+    }
+
     @Test
     void anAgentThatFindsNothingEndsWithoutVerification() throws Exception {
         String uuid = ask();

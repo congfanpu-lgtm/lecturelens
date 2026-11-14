@@ -18,6 +18,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.time.Duration;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.List;
 
 /**
@@ -62,7 +64,13 @@ public class QuestionService {
         List<SubtaskEntity> subs = subtaskMapper.selectList(
                 new QueryWrapper<SubtaskEntity>().eq("task_id", task.getId()).orderByAsc("seq"));
         boolean running = "PENDING".equals(task.getStatus()) || "RUNNING".equals(task.getStatus());
-        boolean answered = "COMPLETED".equals(task.getStatus());
+        // 每一轮核验的输出(只算跑成了的)。补一轮是"补",不是"重来":答案是各轮通过核验的结论合在一起
+        List<JsonNode> verified = subs.stream()
+                .filter(s -> CourseQaDecomposer.VERIFY.equals(s.getKind()) && "COMPLETED".equals(s.getStatus()))
+                .map(s -> json(s.getOutput())).toList();
+        // PARTIAL_FAILED:第一轮核验过了,补的那一轮没跑成——第一轮通过核验的结论照样给出去
+        boolean answered = "COMPLETED".equals(task.getStatus())
+                || ("PARTIAL_FAILED".equals(task.getStatus()) && !verified.isEmpty());
 
         ObjectNode view = objectMapper.createObjectNode();
         view.put("status", running ? "RUNNING" : answered ? "COMPLETED" : "FAILED");
@@ -70,16 +78,23 @@ public class QuestionService {
 
         // 答案只在任务落定后给:补一轮期间不把第一轮(已经被判定不够好)的结果先亮出来
         boolean notFound = false;
-        JsonNode claims = objectMapper.createArrayNode();
+        ArrayNode claims = objectMapper.createArrayNode();
         JsonNode dropped = objectMapper.createArrayNode();
-        if (answered && !subs.isEmpty()) {
-            SubtaskEntity last = subs.get(subs.size() - 1);
-            JsonNode out = json(last.getOutput());
-            if (CourseQaDecomposer.VERIFY.equals(last.getKind())) {
-                claims = out.path("claims");
-                dropped = out.path("dropped");
-            } else {
-                notFound = true;   // agent 说课里没讲,或者一条结论都没给:没有经过核验这一步
+        if (answered && verified.isEmpty()) {
+            // 没有经过核验就结束了:agent 自己说课里没讲。只认它自己的这句话,别的情况(比如补的一轮没补上)不算"没讲"
+            notFound = !subs.isEmpty() && json(subs.get(0).getOutput()).path("notFound").asBoolean(false);
+        } else if (answered) {
+            Set<String> seen = new HashSet<>();
+            for (JsonNode round : verified) {
+                for (JsonNode claim : round.path("claims")) {
+                    if (seen.add(claim.path("text").asText())) {
+                        claims.add(claim);
+                    }
+                }
+            }
+            // 被拿掉的只列最后一次核验的:第一轮被拿掉的那些,第二轮要么换了证据通过了,要么又被拿掉、已经在这里面
+            if (verified.get(verified.size() - 1).path("dropped").isArray()) {
+                dropped = verified.get(verified.size() - 1).path("dropped");
             }
         }
         view.put("notFound", notFound);
@@ -121,7 +136,10 @@ public class QuestionService {
         view.set("stages", stages);
         view.set("usage", objectMapper.createObjectNode().put("calls", calls).put("promptTokens", promptTokens)
                 .put("completionTokens", completionTokens).put("costMicro", costMicro));
-        view.put("error", running || answered ? null : error == null ? "任务失败" : error);
+        boolean repairFailed = answered && !"COMPLETED".equals(task.getStatus());
+        view.put("error", running ? null
+                : repairFailed ? "补的一轮没有跑成,下面是第一轮通过核验的结果(" + (error == null ? "任务失败" : error) + ")"
+                : answered ? null : error == null ? "任务失败" : error);
         return view;
     }
 

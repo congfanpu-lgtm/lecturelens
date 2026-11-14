@@ -15,6 +15,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -37,6 +38,7 @@ public class CourseQaDecomposer implements TaskDecomposer {
     public static final String VERIFY = "QA_VERIFY";
     static final int MAX_QUESTION_CHARS = 500;
     static final int MAX_HISTORY = 3;
+    static final int MAX_HISTORY_ANSWER_CHARS = 2000;
 
     private final ObjectMapper objectMapper;
     private final CourseMapper courseMapper;
@@ -78,12 +80,20 @@ public class CourseQaDecomposer implements TaskDecomposer {
         if (lectures.isEmpty()) {
             throw new IllegalArgumentException("这门课还没有处理好的讲次");
         }
-        ArrayNode history = in.putArray("history");
-        JsonNode given = payload.path("history");
-        for (int i = Math.max(0, given.size() - MAX_HISTORY); i < given.size(); i++) {   // 只带最近几轮
-            history.addObject().put("question", given.get(i).path("question").asText(""))
-                    .put("answer", given.get(i).path("answer").asText(""));
+        // 历史对话是调用方自己送来的(页面,或者通用的任务提交接口),每一轮都要限长:不然一段几十万字的"历史"
+        // 会原样进到每一次模型调用里。形状不对、缺问题或缺回答的那几轮不带。
+        List<ObjectNode> turns = new ArrayList<>();
+        if (payload.path("history").isArray()) {
+            for (JsonNode turn : payload.get("history")) {
+                String q = turn.path("question").asText("").trim();
+                String a = turn.path("answer").asText("").trim();
+                if (!q.isEmpty() && !a.isEmpty()) {
+                    turns.add(objectMapper.createObjectNode().put("question", cut(q, MAX_QUESTION_CHARS))
+                            .put("answer", cut(a, MAX_HISTORY_ANSWER_CHARS)));
+                }
+            }
         }
+        in.putArray("history").addAll(turns.subList(Math.max(0, turns.size() - MAX_HISTORY), turns.size()));   // 只带最近几轮
         if (payload.hasNonNull("model")) {
             in.put("model", payload.get("model").asText());
         }
@@ -128,13 +138,29 @@ public class CourseQaDecomposer implements TaskDecomposer {
         for (JsonNode d : out.path("dropped")) {
             feedback.addObject().put("text", d.path("text").asText()).put("reason", d.path("reason").asText());
         }
+        // 通过核验的那些也告诉它:这一轮只补被拿掉的部分,最后的答案是两轮通过核验的结论合在一起(QuestionService)
+        ArrayNode kept = in.putArray("kept");
+        for (JsonNode c : out.path("claims")) {
+            kept.addObject().put("text", c.path("text").asText());
+        }
         return List.of(new SubtaskDef(last.getSeq() + 1, in.toString(), AGENT));
     }
 
-    /** 最后一步成功才算回答完了;任何一步失败(包括核验没跑成)都是 FAILED:没核验过的结论不能当答案。 */
+    /**
+     * 最后一步成功才算回答完了。第一轮的核验没跑成 → FAILED:没核验过的结论不能当答案。
+     * 第一轮核验过了、补的那一轮(agent 或核验)没跑成 → PARTIAL_FAILED:第一轮通过核验的结论照样是答案。
+     */
     @Override
     public TaskStatus terminalStatus(TaskEntity task, List<SubtaskEntity> subs, TaskStatus computed) {
-        return completed(subs.get(subs.size() - 1)) ? TaskStatus.COMPLETED : TaskStatus.FAILED;
+        if (completed(subs.get(subs.size() - 1))) {
+            return TaskStatus.COMPLETED;
+        }
+        boolean verifiedOnce = subs.stream().anyMatch(s -> VERIFY.equals(s.getKind()) && completed(s));
+        return verifiedOnce ? TaskStatus.PARTIAL_FAILED : TaskStatus.FAILED;
+    }
+
+    private static String cut(String s, int max) {
+        return s.length() > max ? s.substring(0, max) : s;
     }
 
     private static boolean completed(SubtaskEntity s) {

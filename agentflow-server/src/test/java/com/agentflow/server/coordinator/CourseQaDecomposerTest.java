@@ -197,6 +197,52 @@ class CourseQaDecomposerTest {
     }
 
     @Test
+    void theSecondRoundIsToldWhatWasKept() throws Exception {
+        List<SubtaskEntity> subs = afterAgent(3);
+        subs.add(sub(1, "QA_VERIFY", "COMPLETED", "{}", verified(1, 2)));
+        JsonNode in = json(d.nextStage(task(), subs).get(0).inputJson());
+        assertEquals(1, in.get("kept").size());
+        assertEquals("kept 0", in.get("kept").get(0).get("text").asText());
+    }
+
+    @Test
+    void aSecondRoundThatFailsOrAddsNothingKeepsTheFirstRoundsAnswer() throws Exception {
+        List<SubtaskEntity> subs = afterAgent(3);
+        subs.add(sub(1, "QA_VERIFY", "COMPLETED", "{}", verified(1, 2)));
+        subs.add(sub(2, "QA_AGENT", "FAILED", subs.get(0).getInput(), null));
+        assertTrue(d.nextStage(task(), subs).isEmpty());
+        assertEquals(TaskStatus.PARTIAL_FAILED, d.terminalStatus(task(), subs, TaskStatus.PARTIAL_FAILED),
+                "第一轮通过核验的结论还在,不能因为补的一轮没跑成就整题失败");
+
+        subs.set(2, sub(2, "QA_AGENT", "COMPLETED", subs.get(0).getInput(), subs.get(0).getOutput()));
+        subs.add(sub(3, "QA_VERIFY", "FAILED", "{}", null));
+        assertTrue(d.nextStage(task(), subs).isEmpty());
+        assertEquals(TaskStatus.PARTIAL_FAILED, d.terminalStatus(task(), subs, TaskStatus.PARTIAL_FAILED));
+
+        subs.remove(3);
+        subs.set(2, sub(2, "QA_AGENT", "COMPLETED", subs.get(0).getInput(),
+                "{\"question\":\"what is rlhf\",\"notFound\":true,\"claims\":[],\"steps\":2,\"toolCalls\":[],\"usage\":{}}"));
+        assertTrue(d.nextStage(task(), subs).isEmpty(), "补的一轮什么都没补上:结束");
+        assertEquals(TaskStatus.COMPLETED, d.terminalStatus(task(), subs, TaskStatus.COMPLETED));
+    }
+
+    @Test
+    void historyIsCappedAndMalformedHistoryIsIgnored() throws Exception {
+        String huge = "x".repeat(200_000);
+        JsonNode in = json(d.decompose(json("{\"courseId\":3,\"question\":\"what is rlhf\",\"history\":["
+                + "{\"question\":\"" + huge + "\",\"answer\":\"" + huge + "\"},"
+                + "{\"question\":\"what is sft\",\"answer\":\"\"},"
+                + "{\"question\":\"\",\"answer\":\"an answer without a question\"},"
+                + "\"not a turn\"]}")).get(0).inputJson());
+        assertEquals(1, in.get("history").size(), "没有问题或没有回答的那几轮不带");
+        assertEquals(CourseQaDecomposer.MAX_QUESTION_CHARS, in.get("history").get(0).get("question").asText().length());
+        assertEquals(CourseQaDecomposer.MAX_HISTORY_ANSWER_CHARS, in.get("history").get(0).get("answer").asText().length());
+        // 通用的任务提交接口可以送任何形状的 payload:history 不是数组时当作没有,不能抛空指针
+        assertEquals(0, json(d.decompose(json("{\"courseId\":3,\"question\":\"q\",\"history\":{\"question\":\"a\"}}"))
+                .get(0).inputJson()).get("history").size());
+    }
+
+    @Test
     void aFailedStepFailsTheTask() throws Exception {
         List<SubtaskEntity> agentFailed = List.of(sub(0, "QA_AGENT", "FAILED", "{}", null));
         assertTrue(d.nextStage(task(), agentFailed).isEmpty());

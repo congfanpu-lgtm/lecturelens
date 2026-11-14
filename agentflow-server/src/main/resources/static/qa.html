@@ -203,6 +203,7 @@ function render(a) {
     box.append(el("div", "note", "这次提问没有完成：" + (a.error || "未知原因")));
     return;
   }
+  if (a.error) box.append(el("div", "note", a.error));      // 答案给出来了,但补的一轮没有跑成
   if (a.notFound) box.append(el("div", "note", "这门课里没有讲到这个问题。"));
   else if (!a.claims.length) box.append(el("div", "note", "没有能通过核验的结论。"));
 
