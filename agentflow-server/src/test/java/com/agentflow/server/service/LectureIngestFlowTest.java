@@ -17,6 +17,7 @@ import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.List;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -83,16 +84,35 @@ class LectureIngestFlowTest {
         service.handle(new ResultMessage(taskId, subtaskId, true, output, null));
     }
 
+    /** 这个 kind 的全部子任务(刚建出来,PENDING),标成已发出后返回它们的 id。 */
+    private List<Long> dispatchedAll(String kind) {
+        List<SubtaskEntity> all = subtaskMapper.selectList(
+                new QueryWrapper<SubtaskEntity>().eq("task_id", taskId).eq("kind", kind).orderByAsc("seq"));
+        all.forEach(s -> subtaskMapper.casStatus(s.getId(), "PENDING", "DISPATCHED"));
+        return all.stream().map(SubtaskEntity::getId).toList();
+    }
+
+    private boolean none(String kind) {
+        return subtaskMapper.selectList(new QueryWrapper<SubtaskEntity>().eq("task_id", taskId).eq("kind", kind)).isEmpty();
+    }
+
     @Test
-    void fiveStepsThenTheLectureIsReady() {
+    void sixStepsThenTheLectureIsReady() {
         ok(fixture(), "{\"mediaKey\":\"" + KEY + "\",\"title\":\"LLM Agents Overview\",\"durationMs\":7101000,\"hasVideo\":true}");
         long transcribe = dispatched("LEC_TRANSCRIBE");
         long frames = dispatched("LEC_FRAMES");
+        ok(frames, "{\"candidates\":25,\"batches\":2,\"cached\":false}");
+        assertTrue(none("LEC_OCR"), "转写还没落定,不进下一阶段");
         ok(transcribe, "{\"utterances\":1298,\"cached\":false}");
-        assertTrue(subtaskMapper.selectList(new QueryWrapper<SubtaskEntity>().eq("task_id", taskId).eq("kind", "LEC_INDEX")).isEmpty(),
-                "截帧还没落定,不能开始建索引");
-        ok(frames, "{\"frames\":120,\"cached\":false}");
-        ok(dispatched("LEC_INDEX"), "{\"speech\":150,\"slides\":120}");
+        List<Long> batches = dispatchedAll("LEC_OCR");
+        assertEquals(2, batches.size(), "挑帧说有 2 批");
+        ok(batches.get(1), "{\"batch\":1,\"frames\":5,\"cached\":false}");
+        assertTrue(none("LEC_INDEX"), "还有一批没识别完,不能开始建索引");
+        ok(batches.get(0), "{\"batch\":0,\"frames\":20,\"cached\":false}");
+        long index = dispatched("LEC_INDEX");
+        assertTrue(subtaskMapper.selectById(index).getInput().contains("\"withSlides\": true")
+                || subtaskMapper.selectById(index).getInput().contains("\"withSlides\":true"));
+        ok(index, "{\"speech\":150,\"slides\":120}");
         assertEquals("INGESTING", lectureMapper.selectById(lectureId).getStatus());
         ok(dispatched("LEC_CONCEPTS"), "{\"concepts\":[{\"name\":\"Pre-training\",\"startMs\":0,\"summary\":\"s\"}],\"usage\":{}}");
 
@@ -105,13 +125,33 @@ class LectureIngestFlowTest {
     }
 
     @Test
+    void aBatchThatFailsForGoodLeavesTheLecturePartlyDone() {
+        ok(fixture(), "{\"mediaKey\":\"" + KEY + "\",\"title\":\"T\",\"durationMs\":1000,\"hasVideo\":true}");
+        ok(dispatched("LEC_TRANSCRIBE"), "{\"utterances\":10,\"cached\":false}");
+        ok(dispatched("LEC_FRAMES"), "{\"candidates\":25,\"batches\":2,\"cached\":false}");
+        List<Long> batches = dispatchedAll("LEC_OCR");
+        ok(batches.get(0), "{\"batch\":0,\"frames\":20,\"cached\":false}");
+        service.handle(new ResultMessage(taskId, batches.get(1), false, null, "media 500: OSError"));
+        long index = dispatched("LEC_INDEX");
+        assertTrue(subtaskMapper.selectById(index).getInput().replace(" ", "").contains("\"withSlides\":false"));
+        ok(index, "{\"speech\":10,\"slides\":0}");
+        ok(dispatched("LEC_CONCEPTS"), "{\"concepts\":[],\"usage\":{}}");
+
+        assertEquals("PARTIAL_FAILED", taskMapper.selectById(taskId).getStatus());
+        LectureEntity l = lectureMapper.selectById(lectureId);
+        assertEquals("PARTIAL", l.getStatus());
+        assertEquals("LEC_OCR: media 500: OSError", l.getError());
+    }
+
+    @Test
     void aFailedTranscriptionFailsTheLectureAndSaysWhy() {
         ok(fixture(), "{\"mediaKey\":\"" + KEY + "\",\"title\":\"T\",\"durationMs\":1000,\"hasVideo\":true}");
         long transcribe = dispatched("LEC_TRANSCRIBE");
         long frames = dispatched("LEC_FRAMES");
         service.handle(new ResultMessage(taskId, transcribe, false, null, "CUDA out of memory"));
-        ok(frames, "{\"frames\":3,\"cached\":false}");
+        ok(frames, "{\"candidates\":25,\"batches\":2,\"cached\":false}");
 
+        assertTrue(none("LEC_OCR"), "整讲已经失败了,不用再识别");
         assertEquals("FAILED", taskMapper.selectById(taskId).getStatus());
         LectureEntity l = lectureMapper.selectById(lectureId);
         assertEquals("FAILED", l.getStatus());

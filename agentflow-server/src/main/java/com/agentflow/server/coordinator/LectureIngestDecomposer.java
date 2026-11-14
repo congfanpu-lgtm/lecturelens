@@ -13,19 +13,23 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
 /**
- * LECTURE_INGEST:把一讲课录播变成可检索的片段。五步,每步一个普通的 Kafka 子任务:
- * 导入 → 转写 ∥ 截帧 → 建索引 → 知识点目录。
+ * LECTURE_INGEST:把一讲课录播变成可检索的片段。每步都是普通的 Kafka 子任务:
+ * 导入 → 转写 ∥ 挑帧 → 识别幻灯片(一批 20 张,各批并行)→ 建索引 → 知识点目录。
  *
  * <p>重活在媒体服务里做,子任务只带 mediaKey 和计数,逐字稿不经过 Kafka 和 MySQL。
  * 转写是一讲一个子任务、不切片:实测一张显卡上多个 worker 并行转写没有收益,提速来自 worker 内的批处理
  * (docs/benchmarks.md 第 7 节)。
  *
+ * <p>识别拆成批是因为它是 CPU 密集、每张图互相独立的活,加机器就能加算力(每个 worker 配自己的识别副本);
+ * 转写不拆,原因见上。
+ *
  * <p>失败的含义按"后面的步骤还能不能做"来定:导入或转写失败,索引建不出来,整讲失败;
- * 截帧或知识点目录失败,语音片段照样能检索,算部分完成。
+ * 挑帧、某一批识别或知识点目录失败,语音片段照样能检索,算部分完成。
  *
  * <p>payload:{@code {"lectureId":12,"courseId":3}}。链接和文件路径只从 lecture 表读:
  * 通用的任务提交接口对外开放,不能让调用方自带一个链接来触发下载。
@@ -39,6 +43,8 @@ public class LectureIngestDecomposer implements TaskDecomposer {
     static final String IMPORT = "LEC_IMPORT";
     static final String TRANSCRIBE = "LEC_TRANSCRIBE";
     static final String FRAMES = "LEC_FRAMES";
+    static final String OCR = "LEC_OCR";
+    static final int OCR_FIRST_SEQ = 10;   // 识别子任务的序号从这里起,排在固定的那五步(0 到 4)后面
     static final String INDEX = "LEC_INDEX";
     static final String CONCEPTS = "LEC_CONCEPTS";
     private static final int MAX_TITLE = 300;
@@ -91,12 +97,27 @@ public class LectureIngestDecomposer implements TaskDecomposer {
         }
         SubtaskEntity indexed = find(subs, INDEX);
         if (indexed == null) {
+            // 挑帧说有几批,就建几个识别子任务。引擎按子任务编号轮流分到各个分区,所以一讲的各批自然散到各个 worker。
+            // 识别排在转写之后:和转写放进同一阶段的话,转写的消息会排在别的讲的识别批次后面,显卡空等。
+            SubtaskEntity picked = find(subs, FRAMES);
+            List<SubtaskEntity> batches = subs.stream().filter(s -> OCR.equals(s.getKind())).toList();
+            int wanted = completed(picked) ? json(picked.getOutput()).path("batches").asInt(0) : 0;
+            if (wanted > 0 && batches.isEmpty()) {
+                List<SubtaskDef> next = new ArrayList<>();
+                for (int n = 0; n < wanted; n++) {
+                    String in = objectMapper.createObjectNode().put("lectureId", lectureId).put("mediaKey", mediaKey)
+                            .put("batch", n).toString();
+                    next.add(new SubtaskDef(OCR_FIRST_SEQ + n, in, OCR));
+                }
+                return next;
+            }
             ObjectNode in = objectMapper.createObjectNode()
                     .put("courseId", payload.path("courseId").asLong())
                     .put("lectureId", lectureId)
                     .put("mediaKey", mediaKey)
                     .put("durationMs", media.path("durationMs").asLong())
-                    .put("withSlides", completed(find(subs, FRAMES)));   // 截帧失败:只索引语音
+                    // 挑帧失败、或者有哪一批识别最终失败:只索引语音。缺一批就合并的话会悄悄少几张幻灯片
+                    .put("withSlides", completed(picked) && batches.stream().allMatch(LectureIngestDecomposer::completed));
             return List.of(new SubtaskDef(3, in.toString(), INDEX));
         }
         if (!completed(indexed) || find(subs, CONCEPTS) != null) {

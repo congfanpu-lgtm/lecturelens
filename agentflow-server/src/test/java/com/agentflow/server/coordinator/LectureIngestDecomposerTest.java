@@ -74,9 +74,76 @@ class LectureIngestDecomposerTest {
     /** 前 n 步都成功的子任务列表(n 最多 5)。 */
     private static List<SubtaskEntity> through(int n) {
         List<SubtaskEntity> all = List.of(ok(0, "LEC_IMPORT", IMPORTED), ok(1, "LEC_TRANSCRIBE", "{\"utterances\":1298}"),
-                ok(2, "LEC_FRAMES", "{\"frames\":120}"), ok(3, "LEC_INDEX", "{\"speech\":150,\"slides\":120}"),
+                ok(2, "LEC_FRAMES", NOTHING_TO_READ), ok(3, "LEC_INDEX", "{\"speech\":150,\"slides\":120}"),
                 ok(4, "LEC_CONCEPTS", CONCEPTS));
         return new ArrayList<>(all.subList(0, n));
+    }
+
+    /** 挑帧的输出:没有要识别的(没有画面,或者这段媒体以前处理过)。 */
+    private static final String NOTHING_TO_READ = "{\"candidates\":0,\"batches\":0,\"cached\":true}";
+
+    /** 导入、转写成功,挑帧说有 3 批要识别;后面跟着给定的识别子任务。 */
+    private static List<SubtaskEntity> picked(SubtaskEntity... ocr) {
+        List<SubtaskEntity> subs = through(2);
+        subs.add(ok(2, "LEC_FRAMES", "{\"candidates\":45,\"batches\":3,\"cached\":false}"));
+        subs.addAll(List.of(ocr));
+        return subs;
+    }
+
+    private static SubtaskEntity batch(int n) {
+        return ok(10 + n, "LEC_OCR", "{\"batch\":" + n + ",\"frames\":20,\"cached\":false}");
+    }
+
+    @Test
+    void ocrBatchesFollowTranscribeAndPick() throws Exception {
+        List<SubtaskDef> next = d.nextStage(task("RUNNING"), picked());
+        assertEquals(List.of("LEC_OCR", "LEC_OCR", "LEC_OCR"), next.stream().map(SubtaskDef::kind).toList());
+        assertEquals(List.of(10, 11, 12), next.stream().map(SubtaskDef::seq).toList());
+        for (int n = 0; n < 3; n++) {
+            assertEquals(n, in(next.get(n)).get("batch").asInt());
+            assertEquals(KEY, in(next.get(n)).get("mediaKey").asText());
+            assertEquals(7, in(next.get(n)).get("lectureId").asLong());
+        }
+    }
+
+    @Test
+    void theIndexWaitsForEveryBatch() throws Exception {
+        List<SubtaskDef> next = d.nextStage(task("RUNNING"), picked(batch(0), batch(1), batch(2)));
+        assertEquals(List.of("LEC_INDEX"), next.stream().map(SubtaskDef::kind).toList());
+        assertEquals(3, next.get(0).seq());
+        assertTrue(in(next.get(0)).get("withSlides").asBoolean());
+    }
+
+    @Test
+    void noBatchesGoesStraightToTheIndex() throws Exception {
+        List<SubtaskDef> next = d.nextStage(task("RUNNING"), through(3));     // 挑帧说没有要识别的
+        assertEquals(List.of("LEC_INDEX"), next.stream().map(SubtaskDef::kind).toList());
+        assertTrue(in(next.get(0)).get("withSlides").asBoolean(), "合并会给出空的幻灯片,或者以前处理好的结果");
+    }
+
+    @Test
+    void aFailedBatchMeansNoSlidesButTheLectureIsStillIndexed() throws Exception {
+        List<SubtaskEntity> subs = picked(batch(0), failed(11, "LEC_OCR", "media 500: OSError"), batch(2));
+        List<SubtaskDef> next = d.nextStage(task("RUNNING"), subs);
+        assertEquals(List.of("LEC_INDEX"), next.stream().map(SubtaskDef::kind).toList());
+        assertFalse(in(next.get(0)).get("withSlides").asBoolean(), "缺一批就不合并:不能悄悄少几张幻灯片");
+
+        subs.add(ok(3, "LEC_INDEX", "{\"speech\":150,\"slides\":0}"));
+        subs.add(ok(4, "LEC_CONCEPTS", CONCEPTS));
+        assertEquals(TaskStatus.PARTIAL_FAILED, d.terminalStatus(task("RUNNING"), subs, TaskStatus.PARTIAL_FAILED));
+        lecture("https://youtu.be/abc", null, null);
+        d.onFinished(task("PARTIAL_FAILED"), subs);
+        LectureEntity l = saved();
+        assertEquals("PARTIAL", l.getStatus());
+        assertEquals("LEC_OCR: media 500: OSError", l.getError());
+    }
+
+    @Test
+    void withoutATranscriptNoBatchIsRead() {
+        List<SubtaskEntity> subs = through(1);
+        subs.add(failed(1, "LEC_TRANSCRIBE", "CUDA out of memory"));
+        subs.add(ok(2, "LEC_FRAMES", "{\"candidates\":45,\"batches\":3,\"cached\":false}"));
+        assertTrue(d.nextStage(task("RUNNING"), subs).isEmpty(), "整讲已经失败了,不用再识别");
     }
 
     private JsonNode in(SubtaskDef def) throws Exception {

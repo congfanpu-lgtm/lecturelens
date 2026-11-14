@@ -75,7 +75,7 @@
         <button class="btn" type="submit">添加一讲</button>
       </form>
       <div class="msg" id="lectureMsg"></div>
-      <div class="hint">添加后依次：导入 → 转写 ∥ 截帧 → 建索引 → 知识点目录。每一步是一个异步子任务，失败会自动重试。</div>
+      <div class="hint">添加后依次：导入 → 转写 ∥ 挑帧 → 识别幻灯片（一批 20 张，各批并行）→ 建索引 → 知识点目录。每一步都是异步子任务，失败会自动重试。</div>
       <table>
         <thead><tr><th>#</th><th>标题</th><th>时长</th><th>状态</th><th>步骤（成功的显示用时）</th><th></th></tr></thead>
         <tbody id="lectures"></tbody>
@@ -91,7 +91,7 @@ function el(tag, cls, text) {           // 所有外来文字都走 textContent
   if (text != null) e.textContent = text;
   return e;
 }
-const STEPS = [["LEC_IMPORT", "导入"], ["LEC_TRANSCRIBE", "转写"], ["LEC_FRAMES", "截帧"], ["LEC_INDEX", "索引"], ["LEC_CONCEPTS", "知识点"]];
+const STEPS = [["LEC_IMPORT", "导入"], ["LEC_TRANSCRIBE", "转写"], ["LEC_FRAMES", "挑帧"], ["LEC_OCR", "识别"], ["LEC_INDEX", "索引"], ["LEC_CONCEPTS", "知识点"]];
 const STATUS = {INGESTING: "处理中", READY: "已完成", PARTIAL: "部分完成", FAILED: "失败"};
 let current = Number(new URLSearchParams(location.hash.slice(1)).get("c")) || null;
 let timer = null;
@@ -177,7 +177,7 @@ function row(l) {
     let cls = "chip", text = label;
     if (s && s.status === "COMPLETED") { cls += " ok"; text += " " + s.seconds + "s"; }
     else if (s && s.status === "FAILED") cls += " bad";
-    else if (s) cls += " run";
+    else if (s) { cls += " run"; if (s.total) text += " " + s.done + "/" + s.total; }   // 识别是分批做的:显示做完了几批
     const chip = el("span", cls, text);
     if (s && s.error) chip.title = s.error;
     chips.append(chip);

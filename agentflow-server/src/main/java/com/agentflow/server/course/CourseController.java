@@ -25,6 +25,7 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.time.Duration;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -171,22 +172,67 @@ public class CourseController {
 
     /** 最近一次摄入任务的各个步骤。seconds 是这一步从建出来到落定的时间(含排队),落定后才有。 */
     private List<Map<String, Object>> stages(String taskUuid) {
-        List<Map<String, Object>> out = new ArrayList<>();
         TaskEntity task = taskUuid == null ? null
                 : taskMapper.selectOne(new QueryWrapper<TaskEntity>().eq("task_uuid", taskUuid));
         if (task == null) {
-            return out;
+            return new ArrayList<>();
         }
-        for (SubtaskEntity s : subtaskMapper.selectList(
-                new QueryWrapper<SubtaskEntity>().eq("task_id", task.getId()).orderByAsc("seq"))) {
-            Map<String, Object> stage = new LinkedHashMap<>();
-            stage.put("kind", s.getKind());
-            stage.put("status", s.getStatus());
-            stage.put("error", s.getErrorMsg());
-            boolean settled = "COMPLETED".equals(s.getStatus()) || "FAILED".equals(s.getStatus());
-            stage.put("seconds", settled && s.getCreatedAt() != null && s.getUpdatedAt() != null
-                    ? Duration.between(s.getCreatedAt(), s.getUpdatedAt()).getSeconds() : null);
-            out.add(stage);
+        return stages(subtaskMapper.selectList(
+                new QueryWrapper<SubtaskEntity>().eq("task_id", task.getId()).orderByAsc("seq")));
+    }
+
+    /**
+     * 一讲有十几个识别子任务(LEC_OCR,一批 20 张),页面上合成"识别"一项:done / total 是进度;
+     * 全部落定后,有失败的算 FAILED,否则 COMPLETED;用时从第一批建出来算到最后一批落定。别的步骤一个子任务一项。
+     */
+    static List<Map<String, Object>> stages(List<SubtaskEntity> subs) {
+        List<Map<String, Object>> out = new ArrayList<>();
+        Map<String, Object> ocr = null;
+        for (SubtaskEntity s : subs) {
+            boolean completed = "COMPLETED".equals(s.getStatus());
+            boolean settled = completed || "FAILED".equals(s.getStatus());
+            if (!"LEC_OCR".equals(s.getKind())) {
+                Map<String, Object> stage = new LinkedHashMap<>();
+                stage.put("kind", s.getKind());
+                stage.put("status", s.getStatus());
+                stage.put("error", s.getErrorMsg());
+                stage.put("seconds", settled && s.getCreatedAt() != null && s.getUpdatedAt() != null
+                        ? Duration.between(s.getCreatedAt(), s.getUpdatedAt()).getSeconds() : null);
+                out.add(stage);
+                continue;
+            }
+            if (ocr == null) {
+                ocr = new LinkedHashMap<>();
+                ocr.put("kind", s.getKind());
+                ocr.put("status", "COMPLETED");
+                ocr.put("error", null);
+                ocr.put("seconds", null);
+                ocr.put("done", 0);
+                ocr.put("total", 0);
+                ocr.put("from", s.getCreatedAt());
+                ocr.put("to", s.getUpdatedAt());
+                out.add(ocr);
+            }
+            ocr.put("total", (int) ocr.get("total") + 1);
+            if (completed) {
+                ocr.put("done", (int) ocr.get("done") + 1);
+            }
+            if (!settled) {
+                ocr.put("status", "RUNNING");
+            } else if (!completed && ocr.get("error") == null) {
+                ocr.put("error", s.getErrorMsg());
+            }
+            if (s.getUpdatedAt() != null && (ocr.get("to") == null || s.getUpdatedAt().isAfter((LocalDateTime) ocr.get("to")))) {
+                ocr.put("to", s.getUpdatedAt());
+            }
+        }
+        if (ocr != null) {
+            LocalDateTime from = (LocalDateTime) ocr.remove("from");
+            LocalDateTime to = (LocalDateTime) ocr.remove("to");
+            if (!"RUNNING".equals(ocr.get("status"))) {
+                ocr.put("status", (int) ocr.get("done") == (int) ocr.get("total") ? "COMPLETED" : "FAILED");
+                ocr.put("seconds", from != null && to != null ? Duration.between(from, to).getSeconds() : null);
+            }
         }
         return out;
     }
