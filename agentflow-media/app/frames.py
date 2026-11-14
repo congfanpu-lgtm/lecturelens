@@ -30,6 +30,10 @@ def keyframes(video: Path) -> Iterator[tuple[int, Image.Image]]:
         stream = container.streams.video[0]
         stream.codec_context.skip_frame = "NONKEY"   # key frames only: an hour of lecture takes seconds
         for frame in container.decode(stream):
+            # Some decoders ignore skip_frame and hand back every frame (measured: VP9). One 44-minute lecture
+            # at 30 fps became 80,000 "key frames" and its frames step ran for two hours.
+            if not frame.key_frame:
+                continue
             yield round(float(frame.pts * stream.time_base) * 1000), frame.to_image()
 
 

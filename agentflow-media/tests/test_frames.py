@@ -244,3 +244,24 @@ def test_a_slide_that_builds_up_keeps_its_fullest_reading(tmp_path, video, monke
     frame = s.read_json(KEY, FRAMES_FILE)["frames"][0]
     assert frame["tsMs"] == 0 and frame["text"].endswith("Next: scalable data")       # 时间是第一次出现,文字是最完整的
     assert (s.dir(KEY) / frame["file"]).is_file()
+
+
+# ---- 11 讲一起摄入时发现的 ----
+
+def test_only_key_frames_come_back_even_when_the_decoder_ignores_the_skip_setting(tmp_path):
+    """有的解码器(实测:VP9)不理会"只解码关键帧"的设置,会把每一帧都交出来。
+    一讲 44 分钟、每秒 30 帧的 VP9 录像因此被当成 8 万个"关键帧"处理,截帧这一步跑了两个小时。"""
+    path = tmp_path / "vp9.webm"
+    out = av.open(str(path), "w")
+    st = out.add_stream("libvpx-vp9", rate=2)
+    st.width, st.height, st.pix_fmt = 320, 180, "yuv420p"
+    st.codec_context.gop_size = 4
+    for i in range(40):
+        img = Image.new("RGB", (320, 180), (i * 6, 80, 80))
+        for p in st.encode(av.VideoFrame.from_image(img)):
+            out.mux(p)
+    for p in st.encode():
+        out.mux(p)
+    out.close()
+    ks = [ts for ts, _ in keyframes(path)]
+    assert len(ks) == 10 and ks[:3] == [0, 2000, 4000]
