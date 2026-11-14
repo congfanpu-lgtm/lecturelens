@@ -14,7 +14,8 @@ public interface TaskDecomposer {
     List<SubtaskDef> decompose(JsonNode payload);
 
     /**
-     * 当前所有子任务都已落定时调用:返回下一阶段要创建的子任务;空 = 没有下一阶段,任务进入终态。
+     * 当前所有子任务都已落定时调用(声明了 {@link #advancesEarly} 的类型:每落定一个子任务就调用一次):
+     * 返回下一阶段要创建的子任务;空 = 现在没有要建的。全部落定时返回空,任务进入终态。
      * 单阶段任务类型不必覆盖。
      */
     default List<SubtaskDef> nextStage(TaskEntity task, List<SubtaskEntity> subs) {

@@ -27,7 +27,8 @@ import java.util.stream.Collectors;
  * → 同一事务内建下一阶段子任务并调大 total,提交后再分发;否则交 {@link TaskFinalizer} 判终态。
  *
  * <p>并发:计数累加是对 task 行的 UPDATE,持行锁到事务提交,多个结果并发回来时串行化;
- * 只有最后一个看到 done+failed==total,所以下一阶段只会创建一次。
+ * 只有最后一个看到 done+failed==total,所以下一阶段只会创建一次。声明了 advancesEarly 的任务类型每次落定都会被问,
+ * 同样是串行的,但"同一批子任务只建一次"要由它的 nextStage 自己保证(已经有了就不建)。
  */
 @Slf4j
 @Component

@@ -50,9 +50,9 @@ class LectureStagesTest {
     @Test
     void finishedBatchesShowTheTimeFromTheFirstToTheLast() {
         List<SubtaskEntity> subs = upToThePick();
+        subs.add(sub("LEC_INDEX", "COMPLETED", 152, 156, null));       // 库里按序号排:索引(3)在识别(10 起)前面
         subs.add(sub("LEC_OCR", "COMPLETED", 110, 125, null));
         subs.add(sub("LEC_OCR", "COMPLETED", 110, 152, null));
-        subs.add(sub("LEC_INDEX", "COMPLETED", 152, 156, null));
         List<Map<String, Object>> stages = CourseController.stages(subs);
         assertEquals(List.of("LEC_IMPORT", "LEC_TRANSCRIBE", "LEC_FRAMES", "LEC_OCR", "LEC_INDEX"), stages.stream().map(s -> s.get("kind")).toList());
         assertEquals("COMPLETED", stages.get(3).get("status"));

@@ -211,7 +211,12 @@ public class CourseController {
                 ocr.put("total", 0);
                 ocr.put("from", s.getCreatedAt());
                 ocr.put("to", s.getUpdatedAt());
-                out.add(ocr);
+                // 识别子任务的序号排在最后(10 起),但它是挑帧的下一步:放在挑帧后面
+                int at = 0;
+                while (at < out.size() && !"LEC_FRAMES".equals(out.get(at).get("kind"))) {
+                    at++;
+                }
+                out.add(Math.min(at + 1, out.size()), ocr);
             }
             ocr.put("total", (int) ocr.get("total") + 1);
             if (completed) {
