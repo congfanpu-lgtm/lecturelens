@@ -72,20 +72,25 @@ def index(course_id: int, lecture_id: int, segs: list[dict]) -> int:
 
 
 def search(course_id: int, query: str, k: int, lecture_ids: list[int] | None = None,
-           mode: str = "hybrid") -> list[dict]:
-    """这门课里按分数降序的 top-k:[{"id","lectureId","startMs","endMs","kind","text","score"}]。"""
+           mode: str = "hybrid", from_ms: int | None = None, to_ms: int | None = None) -> list[dict]:
+    """这门课里按分数降序的 top-k:[{"id","lectureId","startMs","endMs","kind","text","score"}]。
+    from_ms / to_ms:只要和这个时间范围有重叠的片段;只给一头时另一头不限。"""
+    timed = from_ms is not None or to_ms is not None
     with psycopg.connect(store.DB_URL) as conn, conn.cursor() as cur:
         if mode == "bm25":
             ranked = _lexical(course_id, query, lecture_ids)
         elif mode == "dense":
-            ranked = _dense(cur, course_id, query, k, lecture_ids)
+            # 时间范围在取回正文时才筛,所以这里要多取一些候选,免得筛完不足 k 个
+            ranked = _dense(cur, course_id, query, CANDIDATES if timed else k, lecture_ids)
         else:
             dense = [d for d, _ in _dense(cur, course_id, query, CANDIDATES, lecture_ids)]
             ranked = rrf(dense, [d for d, _ in _lexical(course_id, query, lecture_ids)])
-        # 再按课程查一遍正文:内存索引里即使有别的课或已删掉的片段,也出不去
+        # 再按课程查一遍正文:内存索引里即使有别的课或已删掉的片段,也出不去。时间范围也在这里筛,三种检索方式共用
         cur.execute(
-            f"SELECT id, lecture_id, start_ms, end_ms, kind, content FROM {TABLE} WHERE course_id = %s AND id = ANY(%s)",
-            (course_id, [d for d, _ in ranked]),
+            f"""SELECT id, lecture_id, start_ms, end_ms, kind, content FROM {TABLE}
+                WHERE course_id = %s AND id = ANY(%s)
+                  AND (%s::bigint IS NULL OR end_ms > %s::bigint) AND (%s::bigint IS NULL OR start_ms < %s::bigint)""",
+            (course_id, [d for d, _ in ranked], from_ms, from_ms, to_ms, to_ms),
         )
         rows = {r[0]: r for r in cur.fetchall()}
     return [{"id": d, "lectureId": rows[d][1], "startMs": rows[d][2], "endMs": rows[d][3], "kind": rows[d][4],

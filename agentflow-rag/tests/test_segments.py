@@ -88,3 +88,29 @@ def test_http_index_and_search(course):
         bad = {"courseId": course, "lectureId": 1, "segments": [seg(0, "x", kind="video")]}
         assert c.post("/segments/index", json=bad).status_code == 422
         assert c.post("/segments/search", json={"courseId": course, "query": "x", "topK": 51}).status_code == 422
+
+
+# ---- 计划 3 任务 1:限定时间范围 ----
+
+THREE = [seg(0, "Attention lets the model look at every earlier token."),
+         seg(60, "Attention heads specialize in different relations."),
+         seg(120, "Attention cost grows with the square of the sequence length.")]
+
+
+@pytest.mark.parametrize("mode", ["hybrid", "dense", "bm25"])
+def test_search_can_be_limited_to_a_time_range(course, mode):
+    segments.index(course, 1, THREE)
+    hits = segments.search(course, "attention", 10, mode=mode, from_ms=70000, to_ms=100000)
+    assert [h["startMs"] for h in hits] == [60000], mode              # 只有 60-120 秒那个片段和 70-100 秒有重叠
+    assert [h["startMs"] for h in segments.search(course, "attention", 10, mode=mode, to_ms=30000)] == [0]
+    assert {h["startMs"] for h in segments.search(course, "attention", 10, mode=mode, from_ms=110000)} == {60000, 120000}
+    assert len(segments.search(course, "attention", 10, mode=mode)) == 3      # 不给范围:不限
+
+
+def test_http_search_accepts_a_time_range(course):
+    with TestClient(app) as c:
+        c.post("/segments/index", json={"courseId": course, "lectureId": 1, "segments": THREE})
+        body = {"courseId": course, "query": "attention", "topK": 10, "lectureIds": [1], "fromMs": 70000, "toMs": 100000}
+        hits = c.post("/segments/search", json=body).json()["hits"]
+        assert [h["startMs"] for h in hits] == [60000]
+        assert c.post("/segments/search", json={**body, "fromMs": -1}).status_code == 422

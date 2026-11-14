@@ -46,6 +46,8 @@ class SearchSegmentsRequest(BaseModel):
     query: str
     topK: int = Field(5, ge=1, le=50)
     lectureIds: list[int] | None = None
+    fromMs: int | None = Field(None, ge=0)
+    toMs: int | None = Field(None, ge=0)
     mode: Literal["hybrid", "dense", "bm25"] = "hybrid"
 
 
@@ -85,4 +87,4 @@ def index_segments(req: IndexSegmentsRequest):
 @app.post("/segments/search")
 def search_segments(req: SearchSegmentsRequest):
     """课程录播:只在这门课里检索,可以再限定到几讲。"""
-    return {"hits": segments.search(req.courseId, req.query, req.topK, req.lectureIds, req.mode)}
+    return {"hits": segments.search(req.courseId, req.query, req.topK, req.lectureIds, req.mode, req.fromMs, req.toMs)}
