@@ -16,6 +16,7 @@ import com.agentflow.worker.media.MediaClient;
 import com.agentflow.worker.rag.RagClient;
 import com.agentflow.worker.rag.RagClient.SegmentHit;
 import com.agentflow.worker.trace.TraceEmitter;
+import com.agentflow.worker.retry.NonRetryableException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
@@ -32,6 +33,9 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -269,5 +273,58 @@ class CourseQaProcessorTest {
         assertTrue(last.contains("Reward models are trained on human preferences."), last);
         assertTrue(last.indexOf("Reward models never fail.") < last.indexOf("Reward models are trained on human preferences."), last);
         assertTrue(last.contains("不要重复"), last);
+    }
+
+    // ---- 评测用的另外两种跑法(计划 4):固定检索流水线、长上下文 ----
+
+    @Test
+    void ragModeSearchesOnceAndAnswersInOneCall() throws Exception {
+        JsonNode out = run(",\"mode\":\"rag\"", answer(GOOD));
+        assertEquals(1, out.get("claims").size());
+        assertEquals(750000, out.get("claims").get(0).get("evidence").get(0).get("startMs").asLong());
+        verify(rag, times(1)).searchSegments(eq(7L), eq(QUESTION), anyInt(), isNull(), isNull(), isNull());
+        ChatRequest sent = requests(1).get(0);                         // 只有一次模型调用,不给工具
+        assertTrue(sent.getTools() == null || sent.getTools().isEmpty());
+        assertEquals(List.of("system", "user", "user"), sent.getMessages().stream().map(ChatMessage::getRole).toList());
+        assertTrue(sent.getMessages().get(0).getContent().startsWith(Prompts.COURSE_QA_TAG));
+        assertTrue(sent.getMessages().get(1).getContent().contains("[L3 12:30-13:25 speech]\nYou collect human preferences to train a reward model."),
+                sent.getMessages().get(1).getContent());
+        assertEquals(QUESTION, sent.getMessages().get(2).getContent());
+        assertEquals(0, out.get("toolCalls").size());
+    }
+
+    private void transcripts() throws Exception {
+        when(media.transcript("a".repeat(32))).thenReturn(OM.readTree("{\"utterances\":["
+                + "{\"startMs\":0,\"endMs\":20000,\"text\":\"Welcome to the first lecture.\"},"
+                + "{\"startMs\":20000,\"endMs\":50000,\"text\":\"Today we talk about agents.\"},"
+                + "{\"startMs\":50000,\"endMs\":80000,\"text\":\"An agent uses tools.\"}]}"));
+        when(media.transcript("c".repeat(32))).thenReturn(OM.readTree("{\"utterances\":["
+                + "{\"startMs\":750000,\"endMs\":760000,\"text\":\"You collect human preferences to train a reward model.\"}]}"));
+    }
+
+    @Test
+    void longModePutsEveryTranscriptInOneCall() throws Exception {
+        transcripts();
+        JsonNode out = run(",\"mode\":\"long\"", answer(GOOD));
+        assertEquals(1, out.get("claims").size());
+        verify(rag, never()).searchSegments(anyLong(), anyString(), anyInt(), any(), any(), any());
+        ChatRequest sent = requests(1).get(0);
+        assertTrue(sent.getTools() == null || sent.getTools().isEmpty());
+        String course = sent.getMessages().get(1).getContent();
+        // 和检索结果同一种标记,一段不超过一分钟:模型引用时照抄讲次和时间段
+        assertTrue(course.contains("[L1 00:00-00:50 speech]\nWelcome to the first lecture. Today we talk about agents."), course);
+        assertTrue(course.contains("[L1 00:50-01:20 speech]\nAn agent uses tools."), course);
+        assertTrue(course.contains("[L3 12:30-12:40 speech]\nYou collect human preferences to train a reward model."), course);
+        assertEquals(QUESTION, sent.getMessages().get(2).getContent());
+    }
+
+    @Test
+    void longContextRefusesWhenTheCourseDoesNotFit() throws Exception {
+        transcripts();
+        when(media.transcript("c".repeat(32))).thenReturn(OM.readTree("{\"utterances\":[{\"startMs\":0,\"endMs\":9000,\"text\":\""
+                + "x".repeat(CourseTools.LONG_CONTEXT_MAX_CHARS) + "\"}]}"));
+        NonRetryableException e = assertThrows(NonRetryableException.class, () -> run(",\"mode\":\"long\"", answer(GOOD)));
+        assertTrue(e.getMessage().contains(String.valueOf(CourseTools.LONG_CONTEXT_MAX_CHARS)), e.getMessage());
+        verify(gateway, never()).chat(any());                       // 不能悄悄截断成"只看了前几讲"
     }
 }

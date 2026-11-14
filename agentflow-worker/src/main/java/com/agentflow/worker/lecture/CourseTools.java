@@ -27,6 +27,9 @@ import static com.agentflow.worker.lecture.EvidenceChecker.clock;
 public class CourseTools {
 
     static final int TOP_K = 5;
+    static final int MAX_RESULT_CHARS = 6000;
+    static final String CUT_OFF = "\n…(结果太长,只显示了前面一部分。缩小范围再查:限定讲次或时间段,或者换更具体的查询)";
+    static final int LONG_CONTEXT_MAX_CHARS = 800_000;   // 评测课(12.7 小时)约 70 万字符;超过的课不适合这个基线
     static final int MAX_HIT_CHARS = 900;
     static final long MAX_CONTEXT_MS = 180_000;
     private static final int OVERVIEW_CONCEPTS = 8;
@@ -67,6 +70,44 @@ public class CourseTools {
                                 + "\"from\":{\"type\":\"string\",\"description\":\"分:秒\"},\"to\":{\"type\":\"string\",\"description\":\"分:秒\"}},"
                                 + "\"required\":[\"lecture\",\"from\",\"to\"]}",
                         args -> context(bySeq, args)));
+    }
+
+    /**
+     * 评测的长上下文基线用:这门课全部讲次的逐字稿,切成不超过一分钟的段,每段的标记和检索结果一样
+     * ([L讲次 开始-结束 speech]),模型引用时照抄。放不下就直接失败:悄悄截断的话,基线就成了"只看了前几讲"。
+     */
+    public String wholeCourse(JsonNode lectures) {
+        StringBuilder sb = new StringBuilder();
+        for (JsonNode l : lectures) {
+            long from = -1;
+            long to = 0;
+            StringBuilder block = new StringBuilder();
+            for (JsonNode u : media.transcript(l.path("mediaKey").asText()).path("utterances")) {
+                if (from >= 0 && u.path("endMs").asLong() - from > 60_000) {
+                    append(sb, l.path("seq").asInt(), from, to, block);
+                    from = -1;
+                }
+                if (from < 0) {
+                    from = u.path("startMs").asLong();
+                    block.setLength(0);
+                }
+                to = u.path("endMs").asLong();
+                block.append(block.isEmpty() ? "" : " ").append(u.path("text").asText(""));
+            }
+            if (from >= 0) {
+                append(sb, l.path("seq").asInt(), from, to, block);
+            }
+            if (sb.length() > LONG_CONTEXT_MAX_CHARS) {
+                throw new NonRetryableException("这门课的逐字稿超过了长上下文基线的上限 " + LONG_CONTEXT_MAX_CHARS
+                        + " 个字符(读到第 " + l.path("seq").asInt() + " 讲时已有 " + sb.length() + " 个)");
+            }
+        }
+        return sb.toString();
+    }
+
+    private static void append(StringBuilder sb, int seq, long fromMs, long toMs, StringBuilder text) {
+        sb.append(sb.isEmpty() ? "" : "\n\n").append("[L").append(seq).append(' ').append(clock(fromMs)).append('-')
+                .append(clock(toMs)).append(" speech]\n").append(text);
     }
 
     private static String overview(Map<Integer, Lecture> bySeq, JsonNode args) {
@@ -170,7 +211,10 @@ public class CourseTools {
             long shownFrom = frames.get(i).path("tsMs").asLong();
             long shownTo = i + 1 < frames.size() ? frames.get(i + 1).path("tsMs").asLong() : Long.MAX_VALUE;
             if (shownTo > fromMs && shownFrom < toMs) {
-                sb.append("\n--- 幻灯片 ").append(clock(shownFrom)).append(" ---\n").append(frames.get(i).path("text").asText());
+                // 和检索结果同一种标记,来源写明是 slide、时间段最长 5 分钟:模型引用幻灯片时照抄就对
+                long until = Math.min(Math.min(shownTo, l.durationMs()), shownFrom + EvidenceChecker.MAX_WINDOW_MS);
+                sb.append("\n\n[L").append(l.seq()).append(' ').append(clock(shownFrom)).append('-').append(clock(until))
+                        .append(" slide]\n").append(frames.get(i).path("text").asText());
             }
         }
         return sb.toString();
@@ -240,7 +284,10 @@ public class CourseTools {
 
             @Override
             public String run(JsonNode args) throws Exception {
-                return body.run(args);
+                String out = body.run(args);
+                // 太长的结果在这里截,并且明说后面还有:只留一个省略号的话,模型会以为这就是全部
+                return out.length() <= MAX_RESULT_CHARS ? out
+                        : out.substring(0, MAX_RESULT_CHARS - CUT_OFF.length()) + CUT_OFF;
             }
         };
     }

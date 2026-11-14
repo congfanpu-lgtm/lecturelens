@@ -104,6 +104,15 @@ class LecConceptsProcessorTest {
     }
 
     @Test
+    void asksForEnoughTokensForThirtyConceptsWithQuotes() throws Exception {
+        // 30 个知识点,每个带名字、摘要和一句原文,大约 100 到 150 token;上限给 2000 的话真实模型的输出会被截断,这一步就失败了
+        run("{\"concepts\":[{\"name\":\"A\",\"segment\":0,\"summary\":\"s\",\"quote\":\"Point 0. Point 1.\"}]}");
+        ArgumentCaptor<ChatRequest> req = ArgumentCaptor.forClass(ChatRequest.class);
+        verify(gateway).chat(req.capture());
+        assertTrue(req.getValue().getMaxTokens() >= 6000, "输出上限 " + req.getValue().getMaxTokens());
+    }
+
+    @Test
     void keepsAtMostThirty() throws Exception {
         StringBuilder sb = new StringBuilder("{\"concepts\":[");
         for (int i = 0; i < 40; i++) {

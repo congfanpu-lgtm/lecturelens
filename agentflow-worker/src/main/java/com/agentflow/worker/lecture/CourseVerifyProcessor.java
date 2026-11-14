@@ -115,38 +115,50 @@ public class CourseVerifyProcessor implements SubtaskProcessor {
 
         ArrayNode verified = OM.createArrayNode();
         Usage usage = new Usage();
-        if (!candidates.isEmpty()) {   // 没有结论需要判就不调用判官
-            StringBuilder user = new StringBuilder("问题:").append(in.path("question").asText(""));
+        if (!in.path("judge").asBoolean(true)) {
+            // 评测里"去掉第 3 层"的那个系统:前两层照做,通过的直接保留
+            for (Candidate c : candidates) {
+                verified.addObject().put("text", c.text()).set("evidence", c.evidence());
+            }
+        } else if (!candidates.isEmpty()) {   // 没有结论需要判就不调用判官
+            // 给判官的是一个 JSON:结论、问题、原文都是外来的文字,拼成纯文本的话,里面的换行或者"结论 0:"这样的字样
+            // 就能伪造出结构。每条结论有一个 id(c1、c2…),判定按 id 对应,不靠位置和编号。
+            ObjectNode ask = OM.createObjectNode().put("question", in.path("question").asText(""));
+            ArrayNode list = ask.putArray("claims");
             for (int i = 0; i < candidates.size(); i++) {
-                user.append("\n\n结论 ").append(i).append(':').append(candidates.get(i).text().replace('\n', ' '));
+                ObjectNode item = list.addObject().put("id", "c" + (i + 1)).put("text", candidates.get(i).text());
+                ArrayNode evidence = item.putArray("evidence");
                 for (JsonNode e : candidates.get(i).evidence()) {
                     Lecture lecture = lectures.get(e.path("lectureId").asLong());
                     String context = EvidenceChecker.windowText(e.path("source").asText(),
                             e.path("startMs").asLong() - MARGIN_MS, e.path("endMs").asLong() + MARGIN_MS,
                             transcripts.get(lecture.mediaKey()), frames.get(lecture.mediaKey()));
-                    user.append("\n  原文(L").append(lecture.seq()).append(' ').append(clock(e.path("startMs").asLong()))
-                            .append('-').append(clock(e.path("endMs").asLong())).append("):")
-                            .append(around(context, e.path("quote").asText(), MAX_CONTEXT_CHARS))
-                            .append("\n  其中引用的一句:").append(e.path("quote").asText().replace('\n', ' '));
+                    evidence.addObject()
+                            .put("where", "L" + lecture.seq() + " " + clock(e.path("startMs").asLong()) + "-" + clock(e.path("endMs").asLong()))
+                            .put("context", around(context, e.path("quote").asText(), MAX_CONTEXT_CHARS))
+                            .put("quote", e.path("quote").asText());
                 }
             }
+            String user = ask.toString();
             String model = in.hasNonNull("model") ? in.get("model").asText() : null;
             ChatResponse resp = gateway.chat(new ChatRequest(model, List.of(
                     new ChatMessage("system", Prompts.system(Prompts.JUDGE, in.path("question").asText(""))),
-                    new ChatMessage("user", user.toString())), MAX_TOKENS));
+                    new ChatMessage("user", user)), MAX_TOKENS));
             usage = Usage.of(resp, props);
             JsonNode verdicts = TextUtil.parseObject(resp.getContent()).path("verdicts");
             if (!verdicts.isArray()) {
                 throw new IllegalStateException("判官的输出里没有 verdicts 数组");
             }
+            Map<String, Integer> index = new HashMap<>();
+            for (int i = 0; i < candidates.size(); i++) {
+                index.put("c" + (i + 1), i);
+            }
             Map<Integer, JsonNode> byClaim = new HashMap<>();
             for (JsonNode v : verdicts) {
-                JsonNode n = v.path("claim");
-                int i = n.isIntegralNumber() ? n.asInt()
-                        : n.isTextual() && n.asText().trim().matches("\\d{1,4}") ? Integer.parseInt(n.asText().trim()) : -1;
-                if (i < 0 || i >= candidates.size()) {
-                    // 编号对不上(比如判官从 1 数起)时,每条判定都可能落在别的结论头上:整份判定作废,这一步重来
-                    throw new IllegalStateException("判官的判定指向不存在的结论:" + n);
+                Integer i = v.path("id").isTextual() ? index.get(v.path("id").asText().trim()) : null;
+                if (i == null) {
+                    // 判定指向一条不存在的结论:判官把结论对错了号,别的判定也不可信。整份作废,这一步重来
+                    throw new IllegalStateException("判官的判定指向不存在的结论:" + v.path("id"));
                 }
                 // 同一条结论判了两次:有一次说不支持就按不支持算
                 if (!byClaim.containsKey(i) || !v.path("supported").asBoolean(false)) {

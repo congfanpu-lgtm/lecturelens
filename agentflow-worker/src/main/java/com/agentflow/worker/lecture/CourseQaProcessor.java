@@ -11,6 +11,7 @@ import com.agentflow.worker.agent.AgentStep;
 import com.agentflow.worker.agent.Prompts;
 import com.agentflow.worker.agent.TextUtil;
 import com.agentflow.worker.processor.SubtaskProcessor;
+import com.agentflow.worker.agent.tool.AgentTool;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -38,7 +39,7 @@ import java.util.regex.Pattern;
 public class CourseQaProcessor implements SubtaskProcessor {
 
     static final int MAX_TOKENS = 4000;        // 跨讲次的回答带多条引文,研究 agent 的 1600 会把 JSON 截断
-    static final int MAX_TOOL_CHARS = 6000;    // 一次检索 5 个片段、每个最多 900 字
+    static final int MAX_TOOL_CHARS = CourseTools.MAX_RESULT_CHARS;    // 工具自己按这个长度截(并说明后面还有),循环不会再截一次
     static final int MAX_CLAIMS = 12;
     static final int MAX_EVIDENCE = 4;
     private static final int MAX_HISTORY_ANSWER = 500;
@@ -74,6 +75,17 @@ public class CourseQaProcessor implements SubtaskProcessor {
             seed.add(new ChatMessage("user", turn.path("question").asText("")));
             seed.add(new ChatMessage("assistant", TextUtil.truncate(turn.path("answer").asText(""), MAX_HISTORY_ANSWER)));
         }
+        // 评测里不用 agent 的两种跑法:课程内容直接放进消息里,不给工具,一次调用作答(输出格式和核验都一样)
+        String mode = in.path("mode").asText("agent");
+        List<AgentTool> courseTools = tools.forCourse(in.path("courseId").asLong(), lectures);
+        boolean noTools = "rag".equals(mode) || "long".equals(mode);
+        if ("rag".equals(mode)) {       // 固定检索流水线:用问题检索一次
+            AgentTool search = courseTools.stream().filter(t -> "search_segments".equals(t.name())).findFirst().orElseThrow();
+            seed.add(new ChatMessage("user", "下面是用这个问题在这门课里检索到的片段:\n\n"
+                    + search.run(OM.createObjectNode().put("query", question))));
+        } else if ("long".equals(mode)) {   // 长上下文基线:整门课的逐字稿
+            seed.add(new ChatMessage("user", "下面是这门课全部讲次的逐字稿:\n\n" + tools.wholeCourse(lectures)));
+        }
         seed.add(new ChatMessage("user", question));
         if (in.path("feedback").isArray() && !in.get("feedback").isEmpty()) {   // 补一轮:告诉模型上次哪些结论被拿掉、为什么
             StringBuilder sb = new StringBuilder(Prompts.COURSE_QA_FEEDBACK);
@@ -92,8 +104,8 @@ public class CourseQaProcessor implements SubtaskProcessor {
             seed.add(new ChatMessage("user", sb.toString()));
         }
 
-        Profile profile = new Profile(Prompts.system(Prompts.COURSE_QA, question),
-                tools.forCourse(in.path("courseId").asLong(), lectures), MAX_TOKENS, MAX_TOOL_CHARS, true);
+        Profile profile = new Profile(Prompts.system(noTools ? Prompts.COURSE_QA_GIVEN : Prompts.COURSE_QA, question),
+                noTools ? List.of() : courseTools, MAX_TOKENS, MAX_TOOL_CHARS, true);
         Outcome outcome = loop.converse(
                 new AgentRun(msg.getTaskId(), msg.getSubtaskId(), msg.getSubtaskUuid(), question, model), profile, seed);
         String content = outcome.content() == null ? "" : outcome.content().trim();

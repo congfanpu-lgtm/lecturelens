@@ -242,6 +242,43 @@ class CourseQaDecomposerTest {
                 .get(0).inputJson()).get("history").size());
     }
 
+    // ---- 评测选项(计划 4):固定检索流水线、长上下文、不调判官、不补一轮 ----
+
+    private JsonNode agentInput(String eval) throws Exception {
+        return json(d.decompose(json("{\"courseId\":3,\"question\":\"what is rlhf\",\"eval\":" + eval + "}")).get(0).inputJson());
+    }
+
+    @Test
+    void evalOptionsArePassedOnAndValidated() throws Exception {
+        assertEquals("rag", agentInput("{\"mode\":\"rag\"}").get("mode").asText());
+        assertEquals("long", agentInput("{\"mode\":\"long\",\"judge\":false}").get("mode").asText());
+        JsonNode plain = json(d.decompose(json("{\"courseId\":3,\"question\":\"what is rlhf\"}")).get(0).inputJson());
+        assertFalse(plain.has("mode") || plain.has("judge") || plain.has("repair"), "不带选项时和以前一样");
+        assertFalse(agentInput("{\"mode\":\"agent\"}").has("mode"));
+        for (String bad : new String[]{"{\"mode\":\"everything\"}", "{\"judge\":\"no\"}", "{\"repair\":0}", "\"rag\"", "{\"mode\":5}"}) {
+            assertThrows(IllegalArgumentException.class, () -> agentInput(bad), bad);
+        }
+    }
+
+    @Test
+    void withoutTheJudgeVerifyIsToldSo() throws Exception {
+        String input = d.decompose(json("{\"courseId\":3,\"question\":\"what is rlhf\",\"eval\":{\"judge\":false}}")).get(0).inputJson();
+        List<SubtaskEntity> subs = new ArrayList<>(List.of(sub(0, "QA_AGENT", "COMPLETED", input, afterAgent(2).get(0).getOutput())));
+        JsonNode verify = json(d.nextStage(task(), subs).get(0).inputJson());
+        assertFalse(verify.get("judge").asBoolean(true));
+        assertFalse(json(d.nextStage(task(), afterAgent(2)).get(0).inputJson()).has("judge"), "默认不写这一项,核验照常调判官");
+    }
+
+    @Test
+    void ragAndLongNeverGetARepairRoundAndItCanBeSwitchedOff() throws Exception {
+        for (String eval : new String[]{"{\"mode\":\"rag\"}", "{\"mode\":\"long\"}", "{\"repair\":false}"}) {
+            String input = d.decompose(json("{\"courseId\":3,\"question\":\"what is rlhf\",\"eval\":" + eval + "}")).get(0).inputJson();
+            List<SubtaskEntity> subs = new ArrayList<>(List.of(sub(0, "QA_AGENT", "COMPLETED", input, afterAgent(3).get(0).getOutput())));
+            subs.add(sub(1, "QA_VERIFY", "COMPLETED", "{}", verified(0, 3)));
+            assertTrue(d.nextStage(task(), subs).isEmpty(), eval + ":全被拿掉也不补一轮");
+        }
+    }
+
     @Test
     void aFailedStepFailsTheTask() throws Exception {
         List<SubtaskEntity> agentFailed = List.of(sub(0, "QA_AGENT", "FAILED", "{}", null));

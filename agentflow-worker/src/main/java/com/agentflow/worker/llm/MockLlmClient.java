@@ -7,6 +7,7 @@ import com.agentflow.common.llm.TokenUsage;
 import com.agentflow.common.llm.ToolCall;
 import com.agentflow.worker.agent.Prompts;
 import com.agentflow.worker.agent.TextUtil;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -40,7 +41,6 @@ public class MockLlmClient implements LlmClient {
             "between", "about", "versus", "when", "where", "there", "their", "have");
 
     private static final Pattern FIRST_ITEM = Pattern.compile("(?m)^\\[1] (.+)$");
-    private static final Pattern CLAIM_LINE = Pattern.compile("(?m)^结论 (\\d+):(.*)$");
     private static final Pattern HIT_BLOCK = Pattern.compile("(?m)^\\[L(\\d+) (\\S+) (speech|slide)]\\n(.+)$");
     private static final Pattern SEGMENT_LINE = Pattern.compile("(?m)^\\[(\\d+)] \\S+ (.*)$");
 
@@ -148,10 +148,15 @@ public class MockLlmClient implements LlmClient {
     private ChatResponse judge(String user) {
         ObjectNode out = OM.createObjectNode();
         ArrayNode verdicts = out.putArray("verdicts");
-        Matcher claim = CLAIM_LINE.matcher(user);
-        while (claim.find()) {
-            boolean supported = !claim.group(2).contains("UNSUPPORTED");
-            verdicts.addObject().put("claim", Integer.parseInt(claim.group(1))).put("supported", supported)
+        JsonNode claims;
+        try {
+            claims = OM.readTree(user).path("claims");
+        } catch (Exception e) {
+            claims = OM.createArrayNode();
+        }
+        for (JsonNode c : claims) {
+            boolean supported = !c.path("text").asText("").contains("UNSUPPORTED");
+            verdicts.addObject().put("id", c.path("id").asText()).put("supported", supported)
                     .put("reason", supported ? "MOCK 判官:原文支持这条结论" : "MOCK 判官:原文没有说到这一点");
         }
         return new ChatResponse(out.toString(), null, null);
@@ -176,7 +181,11 @@ public class MockLlmClient implements LlmClient {
                     new ToolCall("call_1", "search_segments", OM.createObjectNode().put("query", keywords(question)).toString()));
         }
         ObjectNode out = OM.createObjectNode();
-        Matcher hit = HIT_BLOCK.matcher(toolOutputs.isEmpty() ? "" : toolOutputs.get(0));
+        // 没有工具的两种跑法(固定检索流水线、长上下文):课程内容在用户消息里
+        String material = !toolOutputs.isEmpty() ? toolOutputs.get(0) : toolsOffered ? ""
+                : msgs.stream().filter(m -> "user".equals(m.getRole()) && m.getContent() != null)
+                        .map(ChatMessage::getContent).collect(java.util.stream.Collectors.joining("\n\n"));
+        Matcher hit = HIT_BLOCK.matcher(material);
         if (!hit.find()) {
             out.put("notFound", true).putArray("claims");
             return new ChatResponse(out.toString(), null, null);

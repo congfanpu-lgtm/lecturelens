@@ -38,7 +38,7 @@ import java.util.Set;
 public class LecConceptsProcessor implements SubtaskProcessor {
 
     static final int MAX_CONCEPTS = 30;
-    static final int MAX_TOKENS = 2000;
+    static final int MAX_TOKENS = 6000;   // 30 个知识点,每个带名字、摘要和一句原文,约 100 到 150 token;2000 会把真实模型的输出截断
     private static final int MAX_NAME = 80;
     private static final int MAX_SUMMARY = 200;
     private static final ObjectMapper OM = new ObjectMapper();

@@ -110,8 +110,9 @@ public class AgentLoop {
     public Outcome converse(AgentRun run, Profile profile, List<ChatMessage> seed) {
         Map<String, AgentTool> available = profile.tools().stream()
                 .collect(Collectors.toMap(AgentTool::name, Function.identity()));
-        List<ToolSpec> offered = profile.tools().stream()
+        List<ToolSpec> specs = profile.tools().stream()
                 .map(t -> new ToolSpec(t.name(), t.description(), t.parametersSchema())).toList();
+        List<ToolSpec> offered = specs.isEmpty() ? null : specs;   // 没有工具的运行(一次调用就结束):不发空的工具表
         List<ChatMessage> messages = new ArrayList<>();
         messages.add(new ChatMessage("system", profile.systemPrompt()));
         messages.addAll(seed);

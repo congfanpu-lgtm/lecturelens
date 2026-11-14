@@ -176,8 +176,28 @@ class CourseToolsTest {
         String out = call("read_context", "{\"lecture\":3,\"from\":\"12:30\",\"to\":\"13:00\"}");
         assertTrue(out.contains("12:30 So what is reward modeling?\n12:40 You collect human preferences."), out);
         assertFalse(out.contains("before the window") || out.contains("much later"), out);
-        assertTrue(out.contains("--- 幻灯片 12:20 ---\nReward modeling\nfrom preferences"), out);
+        // 幻灯片和检索结果一样标成 [L讲次 时间段 slide]:模型照抄来源和时间段时不会把幻灯片上的字当成语音
+        assertTrue(out.contains("\n\n[L3 12:20-13:20 slide]\nReward modeling\nfrom preferences"), out);
+        assertTrue(out.startsWith("[L3 12:30-13:00 speech]"), out);
         assertFalse(out.contains("Next slide"), out);
+    }
+
+    @Test
+    void aCutOffResultSaysSo() throws Exception {
+        // 结果超过上限时,末尾要明说"后面还有":只有一个省略号的话,模型会以为这就是全部
+        StringBuilder concepts = new StringBuilder();
+        for (int i = 0; i < 30; i++) {
+            concepts.append(i == 0 ? "" : ",").append("{\"name\":\"Concept ").append(i).append("\",\"startMs\":").append(i * 60000)
+                    .append(",\"summary\":\"").append("a long summary of this concept ".repeat(10)).append("\"}");
+        }
+        String lectures = "[{\"lectureId\":101,\"seq\":1,\"title\":\"T\",\"durationMs\":7101000,\"mediaKey\":\"" + KEY1
+                + "\",\"concepts\":[" + concepts + "]}]";
+        String out = new CourseTools(rag, media).forCourse(7, json(lectures)).stream()
+                .filter(t -> t.name().equals("course_overview")).findFirst().orElseThrow().run(json("{\"lecture\":1}"));
+        assertTrue(out.length() <= CourseTools.MAX_RESULT_CHARS, "长度 " + out.length());
+        assertTrue(out.endsWith(CourseTools.CUT_OFF), out.substring(out.length() - 80));
+        assertTrue(out.contains("Concept 0") && !out.contains("Concept 29"), "前面的还在,后面的被截掉了");
+        assertFalse(call("course_overview", "{\"lecture\":1}").contains(CourseTools.CUT_OFF), "没超过上限的不加这句话");
     }
 
     @Test
@@ -193,6 +213,6 @@ class CourseToolsTest {
         lecture3();
         when(media.frameList(KEY3)).thenThrow(new NonRetryableException("media 404: not found: frames"));
         String out = call("read_context", "{\"lecture\":3,\"from\":\"12:30\",\"to\":\"13:00\"}");
-        assertTrue(out.contains("So what is reward modeling?") && !out.contains("幻灯片"), out);
+        assertTrue(out.contains("So what is reward modeling?") && !out.contains("slide]"), out);
     }
 }

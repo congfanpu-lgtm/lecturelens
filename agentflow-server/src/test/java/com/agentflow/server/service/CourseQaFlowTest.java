@@ -199,6 +199,17 @@ class CourseQaFlowTest {
     }
 
     @Test
+    void theQuestionEndpointIgnoresEvalOptions() throws Exception {
+        // 评测选项(比如把整门课的转写放进一次调用)只能经通用的任务接口用,页面的提问接口不认
+        ask();
+        String uuid = questions.ask(lectureMapper.selectById(lectureId).getCourseId(),
+                OM.readTree("{\"question\":\"what is rlhf\",\"eval\":{\"mode\":\"long\",\"judge\":false}}"));
+        long id = taskMapper.selectOne(new QueryWrapper<TaskEntity>().eq("task_uuid", uuid)).getId();
+        JsonNode input = OM.readTree(subtaskMapper.selectList(new QueryWrapper<SubtaskEntity>().eq("task_id", id)).get(0).getInput());
+        assertFalse(input.has("mode") || input.has("judge"), input.toString());
+    }
+
+    @Test
     void anAgentThatFindsNothingEndsWithoutVerification() throws Exception {
         String uuid = ask();
         finish("QA_AGENT", "{\"question\":\"what is rlhf\",\"notFound\":true,\"claims\":[],\"steps\":2,\"toolCalls\":[]," + USAGE + "}");

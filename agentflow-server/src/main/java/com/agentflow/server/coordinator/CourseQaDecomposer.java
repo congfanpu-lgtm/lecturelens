@@ -38,6 +38,7 @@ public class CourseQaDecomposer implements TaskDecomposer {
     public static final String VERIFY = "QA_VERIFY";
     static final int MAX_QUESTION_CHARS = 500;
     static final int MAX_HISTORY = 3;
+    static final List<String> MODES = List.of("agent", "rag", "long");
     static final int MAX_HISTORY_ANSWER_CHARS = 2000;
 
     private final ObjectMapper objectMapper;
@@ -97,6 +98,7 @@ public class CourseQaDecomposer implements TaskDecomposer {
         if (payload.hasNonNull("model")) {
             in.put("model", payload.get("model").asText());
         }
+        evalOptions(payload.path("eval"), in);
         return List.of(new SubtaskDef(0, in.toString(), AGENT));
     }
 
@@ -121,6 +123,9 @@ public class CourseQaDecomposer implements TaskDecomposer {
                         .put("durationMs", l.path("durationMs").asLong()).put("mediaKey", l.path("mediaKey").asText());
             }
             in.set("claims", out.path("claims"));
+            if (agentInput.has("judge")) {
+                in.put("judge", false);   // 评测里"去掉第 3 层"的那个系统
+            }
             if (agentInput.hasNonNull("model")) {
                 in.put("model", agentInput.get("model").asText());
             }
@@ -130,7 +135,7 @@ public class CourseQaDecomposer implements TaskDecomposer {
         long rounds = subs.stream().filter(s -> AGENT.equals(s.getKind())).count();
         int dropped = out.path("dropped").size();
         int total = dropped + out.path("claims").size();
-        if (rounds > 1 || dropped < 1 || dropped * 3 <= total) {
+        if (rounds > 1 || !agentInput.path("repair").asBoolean(true) || dropped < 1 || dropped * 3 <= total) {
             return List.of();
         }
         ObjectNode in = agentInput.deepCopy();
@@ -157,6 +162,42 @@ public class CourseQaDecomposer implements TaskDecomposer {
         }
         boolean verifiedOnce = subs.stream().anyMatch(s -> VERIFY.equals(s.getKind()) && completed(s));
         return verifiedOnce ? TaskStatus.PARTIAL_FAILED : TaskStatus.FAILED;
+    }
+
+    /**
+     * 评测用的选项(payload.eval,见 docs/superpowers/plans/2026-11-14-course-video-4-eval.md):
+     * mode = rag(检索一次、一次模型调用)或 long(整门课的逐字稿放进一次调用);judge = false(核验不调判官);
+     * repair = false(不补一轮;rag 和 long 固定不补)。不带 eval 时什么都不写进输入,行为和没有这些选项时一样。
+     * 通用的任务提交接口谁都能调,所以不认识的值一律拒绝;页面的提问接口不传 eval(QuestionService)。
+     */
+    private static void evalOptions(JsonNode eval, ObjectNode in) {
+        if (eval.isMissingNode() || eval.isNull()) {
+            return;
+        }
+        if (!eval.isObject()) {
+            throw new IllegalArgumentException("payload.eval 要是一个对象");
+        }
+        String mode = "agent";
+        if (eval.has("mode")) {
+            if (!eval.get("mode").isTextual() || !MODES.contains(eval.get("mode").asText())) {
+                throw new IllegalArgumentException("payload.eval.mode 只能是 " + MODES);
+            }
+            mode = eval.get("mode").asText();
+        }
+        for (String flag : List.of("judge", "repair")) {
+            if (eval.has(flag) && !eval.get(flag).isBoolean()) {
+                throw new IllegalArgumentException("payload.eval." + flag + " 只能是 true 或 false");
+            }
+        }
+        if (!"agent".equals(mode)) {
+            in.put("mode", mode);
+        }
+        if (!eval.path("judge").asBoolean(true)) {
+            in.put("judge", false);
+        }
+        if (!"agent".equals(mode) || !eval.path("repair").asBoolean(true)) {
+            in.put("repair", false);
+        }
     }
 
     private static String cut(String s, int max) {
