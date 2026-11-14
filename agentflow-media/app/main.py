@@ -4,10 +4,11 @@ from functools import lru_cache
 
 from fastapi import Depends, FastAPI
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, StrictStr, model_validator
 
 from . import config
 from .asr import Transcriber, WhisperTranscriber, transcribe_media, transcript_file
+from . import frames as slides
 from .frames import FRAMES_FILE, Ocr, RapidOcr, frames_media
 from .importer import FetchError, Fetcher, import_path, import_url, ytdlp_fetch
 from .stats import Stats
@@ -130,6 +131,39 @@ def transcribe(key: str, store: Store = Depends(get_store), t: Transcriber = Dep
 @app.post("/media/{key}/frames")
 def frames(key: str, store: Store = Depends(get_store), ocr: Ocr = Depends(get_ocr), s: Stats = Depends(get_stats)):
     return frames_media(store, key, ocr, s)
+
+
+# The same work as POST /media/{key}/frames in three steps, so that the OCR can be spread over workers:
+# pick -> one OCR call per batch, in any order, on any OCR replica -> merge.
+
+@app.post("/media/{key}/frames/pick")
+def pick_frames(key: str, store: Store = Depends(get_store)):
+    return slides.pick(store, key)
+
+
+class BatchTexts(BaseModel):
+    texts: dict[str, StrictStr]
+
+
+@app.get("/media/{key}/frames/batches/{n}")
+def get_batch(key: str, n: int, store: Store = Depends(get_store)):
+    return slides.Local(store).batch(key, n)
+
+
+@app.put("/media/{key}/frames/batches/{n}")
+def put_batch(key: str, n: int, body: BatchTexts, store: Store = Depends(get_store)):
+    return {"stored": slides.Local(store).save(key, n, body.texts)}
+
+
+@app.post("/media/{key}/frames/batches/{n}/ocr")
+def ocr_batch(key: str, n: int, store: Store = Depends(get_store), ocr: Ocr = Depends(get_ocr),
+              s: Stats = Depends(get_stats)):
+    return slides.ocr_batch(slides.Local(store), key, n, ocr, s)
+
+
+@app.post("/media/{key}/frames/merge")
+def merge_frames(key: str, store: Store = Depends(get_store), s: Stats = Depends(get_stats)):
+    return slides.merge(store, key, s)
 
 
 @app.get("/media/{key}/meta")

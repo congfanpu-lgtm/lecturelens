@@ -1,4 +1,8 @@
-"""Slides: decode key frames only, OCR a frame only when the picture changed."""
+"""Slides: decode key frames only, OCR a frame only when the picture changed.
+
+Three steps, so that the OCR (the expensive part) can run in batches on any number of machines:
+pick (decode, keep the frames whose picture changed) -> OCR in batches of OCR_BATCH -> merge (drop near-duplicate
+readings). frames_media runs all three in one call."""
 import difflib
 import shutil
 import tempfile
@@ -12,13 +16,15 @@ from PIL import Image
 
 from . import config
 from .stats import Stats
-from .store import NotFound, Store
+from .store import BadInput, NotFound, Store
 
 MIN_TEXT = 10   # frames whose text is shorter than this carry nothing worth indexing
 # The file name carries the version of the algorithm: bumping it makes older results count as "not done yet".
 # v2 = change detection ignores always-moving regions, near-duplicate text removed.
 # v3 = of several similar readings of one slide the fullest is kept (v2 kept the first).
 FRAMES_FILE = "frames.v3.json"
+CANDIDATES_FILE = "candidates.v1.json"   # {"keyframes": n, "files": [...]}: the frames picked for OCR, in time order
+OCR_BATCH = 20                           # candidate frames per OCR batch (one batch = one subtask of the engine)
 ROWS, COLS, BLOCK = 9, 16, 10   # the 160x90 thumbnail as 10x10-pixel blocks
 BLOCK_SHARE = 0.05              # a block "changed" when more than 5% of its pixels moved
 NOISY_SHARE = 0.5               # a block that changes between more than half of all key-frame pairs is always moving
@@ -114,47 +120,139 @@ class RapidOcr:
         return "\n".join(line[1] for line in result or [])
 
 
-def frames_media(store: Store, key: str, ocr: Ocr, stats: Stats) -> dict:
+def _batches(n_files: int) -> int:
+    return -(-n_files // OCR_BATCH)
+
+
+def _texts_file(n: int) -> str:
+    return f"ocr.{n}.json"   # {"texts": {file name: text}} for batch n
+
+
+def pick(store: Store, key: str) -> dict:
+    """Step 1: save the key frames whose picture changed as frames/<ms>.jpg and list them. No OCR.
+    Which frames are picked depends only on the pictures, never on what the OCR reads, so the batches
+    can be read in any order and on any machine."""
     # ponytail: 一直在动的块是按整段视频统计的。镜头对着讲台超过一半时长的录像,所有块都会被当成"一直在动",
     # 幻灯片就找不到了;真遇到再改成按时间窗口统计
     meta = store.read_json(key, "meta.json")
     if meta is None:
         raise NotFound(key)
     with store.lock("frames:" + key):   # a retry that arrives while the first run is still going waits
+        if store.read_json(key, FRAMES_FILE) is not None:   # this media was finished earlier: nothing left to read
+            return {"mediaKey": key, "cached": True, "candidates": 0, "batches": 0}
+        doc = store.read_json(key, CANDIDATES_FILE)
+        cached = doc is not None
+        if not cached:
+            files: list[str] = []
+            n_key = 0
+            for old in store.dir(key).glob("ocr.*.json"):   # readings of an earlier list of candidates
+                old.unlink()
+            if meta["video"]:
+                video = store.dir(key) / meta["video"]
+                ignore = noisy_blocks(video)   # first pass over the key frames (seconds); an unreadable video fails here
+                shutil.rmtree(store.dir(key) / "frames", ignore_errors=True)   # images of an earlier or failed run
+                (store.dir(key) / "frames").mkdir()
+                seen = None
+                for ts_ms, img in keyframes(video):
+                    n_key += 1
+                    now = small(img)
+                    if seen is not None and not changed(seen, now, ignore):
+                        continue
+                    seen = now   # compare against the last frame we picked, so slow fades still add up to a change
+                    files.append(f"{ts_ms:09d}.jpg")
+                    img.save(store.dir(key) / "frames" / files[-1], quality=80)
+            doc = {"keyframes": n_key, "files": files}
+            store.write_json(key, CANDIDATES_FILE, doc)   # written last: a failed run leaves no list
+        return {"mediaKey": key, "cached": cached, "candidates": len(doc["files"]), "batches": _batches(len(doc["files"]))}
+
+
+class Local:
+    """Where the OCR step finds a batch and leaves its result, when this process holds the files."""
+
+    def __init__(self, store: Store):
+        self.store = store
+
+    def batch(self, key: str, n: int) -> dict:
+        doc = self.store.read_json(key, CANDIDATES_FILE)
+        files = doc["files"][n * OCR_BATCH:(n + 1) * OCR_BATCH] if doc is not None and n >= 0 else []
+        if not files:
+            raise NotFound(f"batch {n} of {key}")
+        return {"files": files, "done": self.store.read_json(key, _texts_file(n)) is not None}
+
+    def image(self, key: str, name: str) -> Image.Image:
+        return Image.open(self.store.dir(key) / "frames" / name)
+
+    def save(self, key: str, n: int, texts: dict[str, str]) -> int:
+        # the names arrive over HTTP from an OCR replica: only this batch's own files may be written
+        if set(texts) != set(self.batch(key, n)["files"]):
+            raise BadInput(f"texts do not match the files of batch {n}")
+        self.store.write_json(key, _texts_file(n), {"texts": texts})
+        return len(texts)
+
+
+def ocr_batch(source, key: str, n: int, ocr: Ocr, stats: Stats) -> dict:
+    """Step 2: read the text of one batch of picked frames. Reading a batch twice (a retry, a redelivery)
+    is harmless: the result is written whole, and both readings are of the same images."""
+    batch = source.batch(key, n)
+    if not batch["done"]:
+        texts = {}
+        for name in batch["files"]:
+            img = source.image(key, name)
+            with OCR_SLOTS:   # shared by all lectures: without it eleven lectures at once thrash the CPU
+                texts[name] = ocr.read(img).strip()
+        source.save(key, n, texts)
+    return {"mediaKey": key, "batch": n, "frames": len(batch["files"]), "cached": batch["done"]}
+
+
+def merge(store: Store, key: str, stats: Stats) -> dict:
+    """Step 3: put the batches back in time order and keep one reading per slide."""
+    with store.lock("frames:" + key):
         if (doc := store.read_json(key, FRAMES_FILE)) is not None:
             return {"mediaKey": key, "cached": True, "frames": len(doc["frames"])}
+        candidates = store.read_json(key, CANDIDATES_FILE)
+        if candidates is None:
+            raise NotFound(f"candidates of {key}")
+        texts: dict[str, str] = {}
+        for n in range(_batches(len(candidates["files"]))):
+            part = store.read_json(key, _texts_file(n))
+            if part is None:   # merging without it would silently lose up to OCR_BATCH slides
+                raise BadInput(f"batch {n} of {key} has not been read yet")
+            texts.update(part["texts"])
         frames: list[dict] = []
-        n_key = n_ocr = 0
-        if meta["video"]:
-            video = store.dir(key) / meta["video"]
-            ignore = noisy_blocks(video)   # first pass over the key frames (seconds); an unreadable video fails here
-            shutil.rmtree(store.dir(key) / "frames", ignore_errors=True)   # images of an earlier or failed run
-            (store.dir(key) / "frames").mkdir()
-            seen = text_kept = None
-            for ts_ms, img in keyframes(video):
-                n_key += 1
-                now = small(img)
-                if seen is not None and not changed(seen, now, ignore):
-                    continue
-                seen = now   # compare against the last frame we OCRed, so slow fades still add up to a change
-                n_ocr += 1
-                with OCR_SLOTS:   # shared by all lectures: without it eleven lectures at once thrash the CPU
-                    text = ocr.read(img).strip()
-                if len(text) < MIN_TEXT:
-                    continue
-                if text_kept is not None and same_slide(text, text_kept):
-                    # The same slide read again. If there is more on it now (bullets appearing one by one),
-                    # keep the fuller reading and picture, at the time the slide first appeared:
-                    # keeping only the first reading would leave the last bullets out of the index.
-                    if len(text) > len(text_kept):
-                        text_kept = frames[-1]["text"] = text
-                        img.save(store.dir(key) / frames[-1]["file"], quality=80)
-                    continue
-                text_kept = text
-                name = f"frames/{ts_ms:09d}.jpg"
-                img.save(store.dir(key) / name, quality=80)
-                frames.append({"tsMs": ts_ms, "file": name, "text": text})
-        # written last: a failed run leaves no cache
-        store.write_json(key, FRAMES_FILE, {"frames": frames, "keyframes": n_key, "ocred": n_ocr})
+        text_kept = None
+        for name in candidates["files"]:
+            text = texts[name]
+            if len(text) < MIN_TEXT:
+                continue
+            if text_kept is not None and same_slide(text, text_kept):
+                # The same slide read again. If there is more on it now (bullets appearing one by one),
+                # keep the fuller reading and picture, at the time the slide first appeared:
+                # keeping only the first reading would leave the last bullets out of the index.
+                if len(text) > len(text_kept):
+                    text_kept = frames[-1]["text"] = text
+                    frames[-1]["file"] = "frames/" + name
+                continue
+            text_kept = text
+            frames.append({"tsMs": int(name[:9]), "file": "frames/" + name, "text": text})
+        # written before the clean-up: a crash in between leaves stray files, never a result without its images
+        store.write_json(key, FRAMES_FILE, {"frames": frames, "keyframes": candidates["keyframes"],
+                                            "ocred": len(candidates["files"])})
+        kept = {f["file"] for f in frames}
+        for name in candidates["files"]:
+            if "frames/" + name not in kept:
+                (store.dir(key) / "frames" / name).unlink(missing_ok=True)
+        for old in [store.dir(key) / CANDIDATES_FILE, *store.dir(key).glob("ocr.*.json")]:
+            old.unlink(missing_ok=True)
         stats.ocr_runs += 1
         return {"mediaKey": key, "cached": False, "frames": len(frames)}
+
+
+def frames_media(store: Store, key: str, ocr: Ocr, stats: Stats) -> dict:
+    """All three steps in one call, one batch after the other (a single machine, no engine in between)."""
+    if store.read_json(key, "meta.json") is None:
+        raise NotFound(key)
+    with store.lock("frames-all:" + key):   # a second call for the same media waits and then finds the result
+        picked = pick(store, key)
+        for n in range(picked["batches"]):
+            ocr_batch(Local(store), key, n, ocr, stats)
+        return merge(store, key, stats)

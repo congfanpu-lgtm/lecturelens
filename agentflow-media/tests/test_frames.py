@@ -8,9 +8,13 @@ import numpy as np
 import pytest
 from PIL import Image, ImageDraw
 
+from fastapi.testclient import TestClient
+
+from app import frames
 from app.frames import FRAMES_FILE, RapidOcr, changed, frames_media, keyframes, noisy_blocks, same_slide, small
+from app.main import app, get_ocr, get_stats, get_store
 from app.stats import Stats
-from app.store import Store
+from app.store import BadInput, NotFound, Store
 from tests.fakes import KEY, CountingOcr
 
 SLIDES = ["Gradient descent: theta = theta - eta * grad", "ReAct: reason then act with tools",
@@ -307,3 +311,148 @@ def test_ocr_calls_of_different_lectures_share_a_fixed_number_of_slots(tmp_path,
 def test_rapid_ocr_reads_the_same_text_with_a_thread_limit():
     img = slide(SLIDES[0])
     assert "Gradient descent" in RapidOcr(threads=2).read(img)
+
+
+# ---- 识别分批并行(docs/superpowers/plans/2026-11-14-ocr-fanout.md) ----
+
+class SlideOcr:
+    """像真的识别一样能分清测试视频里的三页:按像素认出是哪一页,返回那一页的文字。"""
+
+    def __init__(self):
+        self.calls, self.refs = 0, [small(slide(t)) for t in SLIDES]
+
+    def read(self, img):
+        self.calls += 1
+        now = small(img)
+        return SLIDES[min(range(3), key=lambda i: int(np.abs(now - self.refs[i]).sum()))]
+
+
+def read_all(s, ocr, stats):
+    """挑帧 → 逐批识别 → 合并,分开三步做。返回批数。"""
+    picked = frames.pick(s, KEY)
+    for n in range(picked["batches"]):
+        frames.ocr_batch(frames.Local(s), KEY, n, ocr, stats)
+    frames.merge(s, KEY, stats)
+    return picked["batches"]
+
+
+def test_pick_saves_candidates_without_reading_them(tmp_path, video, monkeypatch):
+    monkeypatch.setattr("app.frames.changed", lambda *a, **k: True)     # 30 个关键帧都是候选
+    monkeypatch.setattr("app.frames.OCR_BATCH", 4)
+    s, ocr = media(tmp_path, video), SlideOcr()
+    assert frames.pick(s, KEY) == {"mediaKey": KEY, "cached": False, "candidates": 30, "batches": 8}
+    doc = s.read_json(KEY, frames.CANDIDATES_FILE)
+    assert doc["keyframes"] == 30 and doc["files"][:2] == ["000000000.jpg", "000002000.jpg"]
+    assert all((s.dir(KEY) / "frames" / f).is_file() for f in doc["files"])
+    assert ocr.calls == 0 and s.read_json(KEY, FRAMES_FILE) is None
+    assert frames.pick(s, KEY)["cached"] is True                        # 再挑一次:用已有的清单
+    assert frames.Local(s).batch(KEY, 7) == {"files": ["000056000.jpg", "000058000.jpg"], "done": False}
+    with pytest.raises(NotFound):
+        frames.Local(s).batch(KEY, 8)
+
+
+def test_batches_then_merge_give_the_same_frames_as_the_one_call_version(tmp_path, video, monkeypatch):
+    monkeypatch.setattr("app.frames.changed", lambda *a, **k: True)
+    monkeypatch.setattr("app.frames.OCR_BATCH", 4)
+    one, steps = media(tmp_path / "one", video), media(tmp_path / "steps", video)
+    frames_media(one, KEY, SlideOcr(), Stats())
+    ocr, stats = SlideOcr(), Stats()
+    assert read_all(steps, ocr, stats) == 8 and ocr.calls == 30 and stats.ocr_runs == 1
+    expected = one.read_json(KEY, FRAMES_FILE)
+    assert [f["tsMs"] for f in expected["frames"]] == [0, 20000, 40000]
+    assert steps.read_json(KEY, FRAMES_FILE) == expected
+    assert expected["keyframes"] == 30 and expected["ocred"] == 30
+
+
+def test_a_batch_read_twice_gives_the_same_result(tmp_path, video, monkeypatch):
+    monkeypatch.setattr("app.frames.OCR_BATCH", 2)
+    s, ocr = media(tmp_path, video), SlideOcr()
+    frames.pick(s, KEY)                                                  # 3 个候选,2 批
+    first = frames.ocr_batch(frames.Local(s), KEY, 0, ocr, Stats())
+    assert first == {"mediaKey": KEY, "batch": 0, "frames": 2, "cached": False} and ocr.calls == 2
+    texts = s.read_json(KEY, "ocr.0.json")
+    again = frames.ocr_batch(frames.Local(s), KEY, 0, ocr, Stats())      # 超时重投、重试
+    assert again["cached"] is True and ocr.calls == 2 and s.read_json(KEY, "ocr.0.json") == texts
+
+
+def test_merge_refuses_when_a_batch_is_missing(tmp_path, video, monkeypatch):
+    monkeypatch.setattr("app.frames.OCR_BATCH", 2)
+    s = media(tmp_path, video)
+    frames.pick(s, KEY)
+    frames.ocr_batch(frames.Local(s), KEY, 0, SlideOcr(), Stats())       # 第 1 批没有识别
+    with pytest.raises(BadInput):
+        frames.merge(s, KEY, Stats())
+    assert s.read_json(KEY, FRAMES_FILE) is None                         # 不能悄悄少几张幻灯片
+
+
+def test_merge_deletes_the_images_it_did_not_keep(tmp_path, video, monkeypatch):
+    monkeypatch.setattr("app.frames.changed", lambda *a, **k: True)
+    s = media(tmp_path, video)
+    read_all(s, SlideOcr(), Stats())
+    kept = {f["file"] for f in s.read_json(KEY, FRAMES_FILE)["frames"]}
+    assert {"frames/" + p.name for p in (s.dir(KEY) / "frames").iterdir()} == kept and len(kept) == 3
+    assert s.read_json(KEY, frames.CANDIDATES_FILE) is None and s.read_json(KEY, "ocr.0.json") is None   # 中间文件不留
+
+
+def test_media_without_video_has_no_batches(tmp_path):
+    s = Store(tmp_path)
+    s.write_json(KEY, "meta.json", {"mediaKey": KEY, "audio": "audio.m4a", "video": None, "durationMs": 1})
+    assert frames.pick(s, KEY) == {"mediaKey": KEY, "cached": False, "candidates": 0, "batches": 0}
+    assert frames.merge(s, KEY, Stats()) == {"mediaKey": KEY, "cached": False, "frames": 0}
+    assert s.read_json(KEY, FRAMES_FILE)["frames"] == []
+
+
+def test_a_finished_lecture_has_nothing_left_to_read(tmp_path, video, monkeypatch):
+    s = media(tmp_path, video)
+    frames_media(s, KEY, SlideOcr(), Stats())
+    monkeypatch.setattr("app.frames.keyframes", lambda v: pytest.fail("已经处理好的讲次不该再解码视频"))
+    assert frames.pick(s, KEY) == {"mediaKey": KEY, "cached": True, "candidates": 0, "batches": 0}
+    assert frames.merge(s, KEY, Stats()) == {"mediaKey": KEY, "cached": True, "frames": 3}
+
+
+def test_storing_texts_for_files_outside_the_batch_is_rejected(tmp_path, video, monkeypatch):
+    monkeypatch.setattr("app.frames.OCR_BATCH", 2)
+    s = media(tmp_path, video)
+    frames.pick(s, KEY)
+    local = frames.Local(s)
+    with pytest.raises(BadInput):
+        local.save(KEY, 0, {"000000000.jpg": "a", "../../meta.json": "b"})
+    with pytest.raises(BadInput):
+        local.save(KEY, 0, {"000000000.jpg": "only one of the two"})
+    assert s.read_json(KEY, "ocr.0.json") is None
+    local.save(KEY, 0, {"000000000.jpg": "first slide text", "000020000.jpg": "second slide text"})
+    assert local.batch(KEY, 0)["done"] is True
+
+
+@pytest.fixture
+def api(tmp_path, video):
+    s, stats = media(tmp_path, video), Stats()
+    app.dependency_overrides.update({get_store: lambda: s, get_stats: lambda: stats, get_ocr: lambda: SlideOcr()})
+    yield TestClient(app)
+    app.dependency_overrides.clear()
+
+
+def test_the_three_steps_over_http(api, monkeypatch):
+    monkeypatch.setattr("app.frames.OCR_BATCH", 2)
+    assert api.post(f"/media/{KEY}/frames/pick").json() == {"mediaKey": KEY, "cached": False, "candidates": 3, "batches": 2}
+    assert api.get(f"/media/{KEY}/frames/batches/1").json() == {"files": ["000040000.jpg"], "done": False}
+    assert api.post(f"/media/{KEY}/frames/merge").status_code == 400            # 还有批没识别
+    assert api.post(f"/media/{KEY}/frames/batches/0/ocr").json() == {"mediaKey": KEY, "batch": 0, "frames": 2, "cached": False}
+    r = api.put(f"/media/{KEY}/frames/batches/1", json={"texts": {"000040000.jpg": SLIDES[2]}})   # 识别副本写回结果
+    assert r.status_code == 200 and r.json() == {"stored": 1}
+    assert api.post(f"/media/{KEY}/frames/merge").json() == {"mediaKey": KEY, "cached": False, "frames": 3}
+    assert [f["tsMs"] for f in api.get(f"/media/{KEY}/frames").json()["frames"]] == [0, 20000, 40000]
+    assert api.get("/stats").json()["ocrRuns"] == 1
+
+
+def test_the_steps_report_what_is_missing(api):
+    missing = "f" * 32
+    assert api.post(f"/media/{missing}/frames/pick").status_code == 404
+    assert api.post(f"/media/{KEY}/frames/merge").status_code == 404            # 还没挑帧
+    assert api.get(f"/media/{KEY}/frames/batches/0").status_code == 404
+    api.post(f"/media/{KEY}/frames/pick")
+    assert api.get(f"/media/{KEY}/frames/batches/9").status_code == 404
+    assert api.post(f"/media/{KEY}/frames/batches/9/ocr").status_code == 404
+    assert api.put(f"/media/{KEY}/frames/batches/0", json={"texts": {"nope.jpg": "x"}}).status_code == 400
+    assert api.put(f"/media/{KEY}/frames/batches/0", json={"texts": {"000000000.jpg": 5}}).status_code == 422
+
