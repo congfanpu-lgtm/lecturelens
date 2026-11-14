@@ -15,7 +15,7 @@ second.
 | Ingest: download, transcription, slide OCR, segment index, concept directory | done, measured on the Berkeley Agentic AI MOOC (Fall 2025) recordings |
 | Course library page and lecture page | done |
 | Search across a course (dense + BM25, scoped to the course) | done |
-| Q&A agent whose every claim carries a timestamped, verified piece of evidence | in progress |
+| Q&A agent whose every claim carries lecture, time range and quote; three-layer verification; Q&A page | done, so far exercised with the mock model only |
 | Public evaluation | not started |
 
 ```mermaid
@@ -40,6 +40,8 @@ twice does no work the second time.
 | Transcription of a 2-hour lecture | 47× realtime |
 | Slide OCR before and after dedup (2-hour lecture) | 974 → 263 OCR calls, 806 s → 238 s, no slide lost |
 | All 11 lectures of a course (12.7 h) added at once | all ingested, none failed; 929 speech and 1,023 slide segments |
+| Slide OCR of eight lectures at once, before and after the concurrency limit | 1,243 s → 405 s |
+| Worker killed mid-answer | another worker resumes from the checkpointed step; done and verified 51 s later |
 
 ![The course library: eleven lectures with the state and time of every step](docs/img/lecturelens-courses.jpg)
 

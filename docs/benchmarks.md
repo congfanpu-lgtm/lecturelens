@@ -416,3 +416,52 @@ What the run showed:
 
 After the fix lecture 7 was ingested again (10 s, everything else cached). The course now holds 929 speech
 segments and 1,023 slide segments.
+
+### OCR concurrency limit
+
+The whole-course run above showed lectures fighting for the CPU while their slides were read. Two limits were
+added to the media service: at most `MEDIA_OCR_SLOTS` OCR calls at once across all lectures, and
+`MEDIA_OCR_THREADS` threads per call. Measurement: the frames step of eight lectures started at the same
+moment, 1,259 OCR calls in total, single runs.
+
+| Calls at once × threads per call | Wall time | Load average |
+|---|---|---|
+| no limit, one thread per core per call (the old behaviour) | 1,243 s | 59 |
+| 12 × 2 | 541 s | 5 |
+| 6 × 4 | 455 s | 12 |
+| **3 × 8 (default: 8 threads, calls at once = cores ÷ 8)** | **405 s** | 26 |
+
+- Limiting is three times faster than not limiting (1,243 s → 405 s) for the same work.
+- The 3 × 8 run shared the machine with a test run for about two minutes, so it is, if anything, understated.
+- One OCR call takes about 1.1 s with 4 threads and under 1.0 s with 8; with 2 threads the cores stay idle.
+- This only removes the thrashing on one machine. More throughput needs more cores: splitting the OCR of a
+  lecture into batches fanned out to several machines is listed in `docs/open-problems.md` (P1, second layer).
+
+## 9. Course Q&A (2026-11-13, mock model)
+
+A question is one `COURSE_QA` task: `QA_AGENT` (a ReAct agent with three tools bound to the course, checkpointed
+after every step) → `QA_VERIFY` (code checks time and quote, one judge-model call checks support). If at least
+one claim and more than a third of the claims are dropped, the agent answers once more with the reasons, and
+the answer is verified again. **Everything below ran with the mock model**: it shows that the flow and the
+verification behave as designed, not how good the answers are. The mock answers from the first search hit; a
+marker in the question makes it invent the quote (`FABRICATE`) or overclaim (`UNSUPPORTED`).
+
+| Question | Result |
+|---|---|
+| "reinforcement learning from human feedback" | 1 claim kept, evidence L1 68:21-68:42 (slide) quoting "Reinforcement learning"; the media service's frame list shows that slide appearing at 68:20. 1 round, about 1 s. |
+| "FABRICATE what is pre-training" | the claim is dropped at layer 2 ("the quoted text is not in L5 48:30-52:52"); a second round runs and is dropped again; final answer: no claim, 1 dropped, 2 rounds. |
+| "UNSUPPORTED how are agents evaluated" | the quote is real and passes layers 1 and 2; the judge rejects the claim (layer 3); second round, same outcome. |
+| a nonsense question | the mock still answers from the nearest segment and the mock judge accepts it. Search always returns the closest segments, so "this course does not cover that" depends entirely on the model; it has to be measured with a real model. |
+
+**Killing the worker mid-answer** (`scripts/chaos-course-qa.sh`, mock model slowed to 4 s per call): the worker
+running the agent was killed after its first step. The other worker resumed from step 2 from the checkpoint;
+the search of step 1 ran once; the answer was verified and completed 51 s after the kill (Kafka's session
+timeout is 45 s).
+
+The Q&A page (`/qa.html`) was checked in a browser: the two steps and their times, a kept claim with its
+evidence chip, a click on the chip positioning the player of that lecture at 68:21 and showing the quote, a
+dropped claim struck through with the layer and reason, the second round's steps, the per-lecture comparison
+table (with a synthetic two-lecture answer), the conversation record, and no console errors.
+
+After the change to the concept directory (each concept must quote its segment), one lecture's directory was
+regenerated: 12 concepts, all 12 with a quote found in their segment.
