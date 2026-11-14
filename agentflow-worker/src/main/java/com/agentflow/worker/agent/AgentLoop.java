@@ -10,6 +10,7 @@ import com.agentflow.worker.agent.tool.AgentTool;
 import com.agentflow.worker.llm.LlmGateway;
 import com.agentflow.worker.llm.LlmModelProperties;
 import com.agentflow.worker.trace.TraceEmitter;
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -56,7 +57,7 @@ public class AgentLoop {
     private static final ObjectMapper OM = new ObjectMapper();
 
     private final LlmGateway gateway;
-    private final Map<String, AgentTool> tools;
+    private final List<AgentTool> tools;
     private final AgentCheckpoint checkpoint;
     private final TraceEmitter trace;
     private final LlmModelProperties props;
@@ -64,7 +65,7 @@ public class AgentLoop {
     public AgentLoop(LlmGateway gateway, List<AgentTool> toolList, AgentCheckpoint checkpoint,
                      TraceEmitter trace, LlmModelProperties props) {
         this.gateway = gateway;
-        this.tools = toolList.stream().collect(Collectors.toMap(AgentTool::name, Function.identity()));
+        this.tools = List.copyOf(toolList);   // 注册的顺序就是发给模型的顺序
         this.checkpoint = checkpoint;
         this.trace = trace;
         this.props = props;
@@ -73,8 +74,13 @@ public class AgentLoop {
     /**
      * 一次运行用什么提示词、哪些工具、模型输出上限(token)、单个工具结果给模型看多长(字符)。
      * 循环本身对所有 agent 都一样。
+     *
+     * <p>failOnToolError:工具自己出故障(不是模型把参数写错)时让整个运行失败、交给重试,而不是把错误当结果给模型看。
+     * 课程问答用它:检索服务挂了的时候,模型看到的"检索失败"会被它当成"课里没讲"。
+     * 研究 agent 不用:它的工具是外部网站,偶尔失败很正常,模型可以换个工具再查。
      */
-    public record Profile(String systemPrompt, List<AgentTool> tools, int maxTokens, int maxToolChars) {
+    public record Profile(String systemPrompt, List<AgentTool> tools, int maxTokens, int maxToolChars,
+                          boolean failOnToolError) {
     }
 
     /** 循环的结果:模型最后的回答原文、用了几步、token 用量、全部已完成的步骤(含续跑前存档的)。 */
@@ -84,7 +90,7 @@ public class AgentLoop {
     /** 研究 agent:全部已注册的工具 + 研究用的提示词,收尾时按 URL 核对引用。 */
     public ObjectNode run(AgentRun run) {
         Profile research = new Profile(Prompts.system(Prompts.AGENT, run.question()),
-                new ArrayList<>(tools.values()), MAX_TOKENS, TextUtil.MAX_TOOL_CHARS);
+                tools, MAX_TOKENS, TextUtil.MAX_TOOL_CHARS, false);
         Outcome out = converse(run, research, List.of(new ChatMessage("user", run.question())));
         Set<String> seenUrls = new LinkedHashSet<>();
         Map<String, StringBuilder> textByUrl = new HashMap<>();   // URL → 它所在的那段工具结果,核对摘录用
@@ -144,7 +150,7 @@ public class AgentLoop {
             List<ChatMessage> results = new ArrayList<>();
             ArrayNode calls = OM.createArrayNode();
             for (ToolCall c : resp.getToolCalls()) {
-                String out = execute(c, cache, available, profile.maxToolChars());
+                String out = execute(c, cache, available, profile);
                 results.add(ChatMessage.tool(c.getId(), out));
                 calls.addObject().put("tool", c.getName()).put("args", c.getArgumentsJson())
                         .put("resultPreview", TextUtil.truncate(out, PREVIEW_CHARS));
@@ -168,7 +174,7 @@ public class AgentLoop {
         return new Outcome(resp.getContent(), MAX_STEPS + 1, usage, history);
     }
 
-    private String execute(ToolCall c, Map<String, String> cache, Map<String, AgentTool> available, int maxChars) {
+    private String execute(ToolCall c, Map<String, String> cache, Map<String, AgentTool> available, Profile profile) {
         String key = cacheKey(c);
         String hit = cache.get(key);
         if (hit != null) {
@@ -182,8 +188,13 @@ public class AgentLoop {
         try {
             String raw = c.getArgumentsJson();
             JsonNode args = OM.readTree(raw == null || raw.isBlank() ? "{}" : raw);
-            out = TextUtil.truncate(tool.run(args), maxChars);
+            out = TextUtil.truncate(tool.run(args), profile.maxToolChars());
         } catch (Exception e) {
+            // 参数不是 JSON、参数写错(IllegalArgumentException)是模型的错,给它看;其余是工具背后的服务出了故障
+            boolean modelsMistake = e instanceof IllegalArgumentException || e instanceof JsonProcessingException;
+            if (profile.failOnToolError() && !modelsMistake) {
+                throw e instanceof RuntimeException r ? r : new IllegalStateException(c.getName() + " 调用失败:" + e, e);
+            }
             return ERROR + c.getName() + " 调用失败:" + e.getMessage();   // 不缓存:瞬时错误允许模型重试
         }
         cache.put(key, out);

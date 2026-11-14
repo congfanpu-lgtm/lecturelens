@@ -140,16 +140,77 @@ class CourseQaProcessorTest {
     }
 
     @Test
-    void evidenceWithAnUnknownLectureOrBadTimeIsDropped() throws Exception {
+    void evidenceWithAnUnknownLectureOrBadTimeIsPassedOnWithTheReason() throws Exception {
         JsonNode out = run("", answer("{\"claims\":[{\"text\":\"A claim.\",\"evidence\":["
                 + "{\"lecture\":99,\"at\":\"12:30-13:25\",\"source\":\"speech\",\"quote\":\"q one is long enough\"},"
                 + "{\"lecture\":3,\"at\":\"around noon\",\"source\":\"speech\",\"quote\":\"q two is long enough\"},"
                 + "{\"lecture\":3,\"at\":\"12:30\",\"source\":\"slide\",\"quote\":\"q three is long enough\"}]}]}"));
-        JsonNode claim = out.get("claims").get(0);
-        assertEquals("A claim.", claim.get("text").asText());                 // 结论留着,由核验决定去留
-        assertEquals(1, claim.get("evidence").size());
-        assertEquals(750000, claim.get("evidence").get(0).get("startMs").asLong());   // 只写了一个时间点:当作那一刻
-        assertEquals(750000, claim.get("evidence").get(0).get("endMs").asLong());
+        JsonNode ev = out.get("claims").get(0).get("evidence");
+        assertEquals("A claim.", out.get("claims").get(0).get("text").asText());   // 结论留着,由核验决定去留
+        // 看不懂的证据不悄悄丢掉:否则核验只能说"没有给出证据",补一轮时模型得到的是错的原因
+        assertEquals(3, ev.size());
+        assertTrue(ev.get(0).get("invalid").asText().contains("99"), ev.get(0).toString());
+        assertTrue(ev.get(1).get("invalid").asText().contains("around noon"), ev.get(1).toString());
+        assertFalse(ev.get(2).has("invalid"));
+        assertEquals(750000, ev.get(2).get("startMs").asLong());   // 只写了一个时间点:当作那一刻
+        assertEquals(750000, ev.get(2).get("endMs").asLong());
+    }
+
+    @Test
+    void smallFormatSlipsInEvidenceAreUnderstood() throws Exception {
+        String rest = ",\"source\":\"speech\",\"quote\":\"You collect human preferences to train a reward model.\"}";
+        JsonNode out = run("", answer("{\"claims\":["
+                + "{\"text\":\"lecture as text\",\"evidence\":[{\"lecture\":\"3\",\"at\":\"12:30-13:25\"" + rest + "]},"
+                + "{\"text\":\"lecture with its letter\",\"evidence\":[{\"lecture\":\"L3\",\"at\":\"12:30 \u2013 13:25\"" + rest + "]},"
+                + "{\"text\":\"the whole label copied\",\"evidence\":[{\"lecture\":3.0,\"at\":\"[L3 12:30-13:25 speech]\"" + rest + "]},"
+                + "{\"text\":\"one piece of evidence, not a list\",\"evidence\":{\"lecture\":3,\"at\":\"[12:30-13:25]\"" + rest + "}]}"));
+        assertEquals(4, out.get("claims").size());
+        for (JsonNode claim : out.get("claims")) {
+            JsonNode e = claim.get("evidence").get(0);
+            assertFalse(e.has("invalid"), claim.toString());
+            assertEquals(103, e.get("lectureId").asLong(), claim.toString());
+            assertEquals(750000, e.get("startMs").asLong(), claim.toString());
+            assertEquals(805000, e.get("endMs").asLong(), claim.toString());
+        }
+    }
+
+    @Test
+    void claimsWrittenAsBareTextAreKeptWithoutEvidence() throws Exception {
+        JsonNode out = run("", answer("{\"claims\":[\"Reward models are trained on preferences.\"]}"));
+        assertFalse(out.get("notFound").asBoolean());
+        assertEquals("Reward models are trained on preferences.", out.get("claims").get(0).get("text").asText());
+        assertEquals(0, out.get("claims").get(0).get("evidence").size());
+    }
+
+    @Test
+    void jsonInTheWrongShapeIsTreatedLikeFreeText() throws Exception {
+        // 是 JSON、但没有 claims:不能变成"课里没讲"。和不是 JSON 的回答一样,整段当一条没有证据的结论交给核验
+        JsonNode out = run("", answer("{\"answer\":\"Reward modeling is about preferences.\"}"));
+        assertFalse(out.get("notFound").asBoolean());
+        assertEquals(1, out.get("claims").size());
+        assertTrue(out.get("claims").get(0).get("text").asText().contains("Reward modeling is about preferences."));
+        assertEquals(0, out.get("claims").get(0).get("evidence").size());
+    }
+
+    @Test
+    void anExplicitlyEmptyListOfClaimsMeansNotFound() throws Exception {
+        assertTrue(run("", answer("{\"claims\":[]}")).get("notFound").asBoolean());
+    }
+
+    @Test
+    void aSearchOutageFailsTheStepInsteadOfLookingLikeNotFound() {
+        when(rag.searchSegments(anyLong(), anyString(), anyInt(), any(), any(), any()))
+                .thenThrow(new IllegalStateException("rag 503"));
+        assertThrows(IllegalStateException.class,
+                () -> run("", search("reward modeling"), answer("{\"notFound\":true,\"claims\":[]}")));
+    }
+
+    @Test
+    void aBadToolArgumentGoesBackToTheModelNotToTheRetryLadder() throws Exception {
+        JsonNode out = run("", search("  "), answer(GOOD));   // query 是空的:模型自己写错了,让它看到错误再来
+        assertEquals(1, out.get("claims").size());
+        String toolResult = requests(2).get(1).getMessages().get(3).getContent();
+        assertTrue(toolResult.startsWith("ERROR"), toolResult);
     }
 
     @Test
@@ -197,5 +258,16 @@ class CourseQaProcessorTest {
         assertEquals("user", sent.get(sent.size() - 1).getRole());
         assertEquals(QUESTION, sent.get(sent.size() - 2).getContent());
         assertTrue(last.contains("Reward models never fail.") && last.contains("引用的原文在 L3 12:30-13:25 里找不到"), last);
+    }
+
+    @Test
+    void theSecondRoundIsToldWhatWasKeptSoItOnlyRedoesTheRest() throws Exception {
+        run(",\"feedback\":[{\"text\":\"Reward models never fail.\",\"reason\":\"找不到\"}],"
+                + "\"kept\":[{\"text\":\"Reward models are trained on human preferences.\"}]", answer(GOOD));
+        List<ChatMessage> sent = requests(1).get(0).getMessages();
+        String last = sent.get(sent.size() - 1).getContent();
+        assertTrue(last.contains("Reward models are trained on human preferences."), last);
+        assertTrue(last.indexOf("Reward models never fail.") < last.indexOf("Reward models are trained on human preferences."), last);
+        assertTrue(last.contains("不要重复"), last);
     }
 }

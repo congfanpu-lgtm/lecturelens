@@ -106,9 +106,11 @@ public class CourseTools {
             throw new IllegalArgumentException("query 不能为空");
         }
         List<Long> lectureIds = null;
-        if (args.path("lectures").isArray() && !args.get("lectures").isEmpty()) {
+        // 模型常把 lectures 写成单数,或者只给一个数而不是数组:都按"限定到这几讲"理解,看不懂就报错,不能悄悄查全课
+        JsonNode wanted = args.hasNonNull("lectures") ? args.get("lectures") : args.path("lecture");
+        if (!wanted.isMissingNode() && !wanted.isNull() && !(wanted.isArray() && wanted.isEmpty())) {
             lectureIds = new ArrayList<>();
-            for (JsonNode n : args.get("lectures")) {
+            for (JsonNode n : wanted.isArray() ? wanted : List.of(wanted)) {
                 lectureIds.add(lecture(bySeq, n).id());
             }
         }
@@ -128,8 +130,11 @@ public class CourseTools {
                 continue;   // 不在这次提问的讲次表里(比如还在处理中的讲次),不给模型看
             }
             String text = h.text().length() > MAX_HIT_CHARS ? h.text().substring(0, MAX_HIT_CHARS) : h.text();
+            // 幻灯片片段从这一张出现一直到下一张出现,可能挂十几分钟;模型会照抄这个时间段当证据,
+            // 而一条证据最多指 5 分钟(EvidenceChecker.MAX_WINDOW_MS),所以这里只写到出现后的 5 分钟
+            long endMs = "slide".equals(h.kind()) ? Math.min(h.endMs(), h.startMs() + EvidenceChecker.MAX_WINDOW_MS) : h.endMs();
             sb.append(sb.isEmpty() ? "" : "\n\n")
-                    .append("[L").append(l.seq()).append(' ').append(clock(h.startMs())).append('-').append(clock(h.endMs()))
+                    .append("[L").append(l.seq()).append(' ').append(clock(h.startMs())).append('-').append(clock(endMs))
                     .append(' ').append(h.kind()).append("]\n").append(text);
         }
         return sb.isEmpty() ? "这门课里没有找到相关内容:" + query : sb.toString();
@@ -177,11 +182,23 @@ public class CourseTools {
 
     /** 序号不在这门课里就报错给模型看,不能悄悄退化成查全课。 */
     private static Lecture lecture(Map<Integer, Lecture> bySeq, JsonNode seq) {
-        Lecture l = seq != null && seq.isIntegralNumber() ? bySeq.get(seq.asInt()) : null;
+        Lecture l = bySeq.get(seqOf(seq));
         if (l == null) {
             throw new IllegalArgumentException("这门课没有第 " + (seq == null ? "?" : seq.asText()) + " 讲,可用的讲次序号:" + bySeq.keySet());
         }
         return l;
+    }
+
+    /** 模型写的讲次序号:3、"3"、"L3"、3.0 都认;别的(1.5、"first")返回 null。 */
+    static Integer seqOf(JsonNode n) {
+        if (n == null) {
+            return null;
+        }
+        if (n.isNumber()) {
+            return n.asDouble() == Math.rint(n.asDouble()) ? Integer.valueOf((int) n.asDouble()) : null;
+        }
+        String text = n.asText("").trim();
+        return text.matches("[Ll]?\\s*\\d{1,4}") ? Integer.valueOf(text.replaceAll("\\D", "")) : null;
     }
 
     /** "分:秒" 或 "时:分:秒";分钟可以超过 59。 */

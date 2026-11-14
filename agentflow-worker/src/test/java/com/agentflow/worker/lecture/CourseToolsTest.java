@@ -128,6 +128,37 @@ class CourseToolsTest {
                 () -> call("search_segments", "{\"query\":\"x\",\"lectures\":[3],\"from\":\"12:30\",\"to\":\"10:00\"}"));
     }
 
+    @Test
+    void aSlideShownForLongerThanFiveMinutesIsPrintedAsARangeThatCanBeCited() throws Exception {
+        // 幻灯片片段从这一张出现一直到下一张出现。一张挂了 12 分钟的幻灯片,模型照抄时间段的话第 1 层会嫌太长
+        when(rag.searchSegments(anyLong(), anyString(), anyInt(), any(), any(), any())).thenReturn(List.of(
+                new SegmentHit("103:slide:2400000", 103, 2400000, 3120000, "slide", "Reward modeling from human preferences", 0.9)));
+        String out = call("search_segments", "{\"query\":\"reward\"}");
+        assertTrue(out.contains("[L3 40:00-45:00 slide]"), out);
+        JsonNode frames = json("[{\"tsMs\":2400000,\"text\":\"Reward modeling from human preferences\"},{\"tsMs\":3120000,\"text\":\"Next\"}]");
+        assertTrue(EvidenceChecker.check(new EvidenceChecker.Evidence(103, 3, 2400000, 2700000, "slide",
+                "Reward modeling from human preferences"), 4648000, json("[]"), frames).ok(), "照抄这个时间段的证据要能过第 1 层");
+    }
+
+    @Test
+    void aLectureNumberWrittenAsTextOrADecimalIsUnderstood() throws Exception {
+        assertTrue(call("course_overview", "{\"lecture\":\"1\"}").contains("Pre-training"));
+        assertTrue(call("course_overview", "{\"lecture\":1.0}").contains("Pre-training"));
+        assertTrue(call("course_overview", "{\"lecture\":\"L1\"}").contains("Pre-training"));
+        assertThrows(IllegalArgumentException.class, () -> call("course_overview", "{\"lecture\":1.5}"));
+        assertThrows(IllegalArgumentException.class, () -> call("course_overview", "{\"lecture\":\"first\"}"));
+    }
+
+    @Test
+    void aLectureFilterInTheWrongShapeDoesNotSilentlySearchTheWholeCourse() throws Exception {
+        when(rag.searchSegments(anyLong(), anyString(), anyInt(), any(), any(), any())).thenReturn(List.of());
+        call("search_segments", "{\"query\":\"rlhf\",\"lectures\":3}");          // 一个数,不是数组
+        call("search_segments", "{\"query\":\"rlhf\",\"lecture\":\"3\"}");      // 参数名写成了单数
+        verify(rag, org.mockito.Mockito.times(2)).searchSegments(eq(7L), eq("rlhf"), anyInt(), eq(List.of(103L)), isNull(), isNull());
+        assertThrows(IllegalArgumentException.class, () -> call("search_segments", "{\"query\":\"rlhf\",\"lectures\":\"all of them\"}"));
+        verify(rag, never()).searchSegments(anyLong(), anyString(), anyInt(), isNull(), any(), any());
+    }
+
     private void lecture3() {
         when(media.transcript(KEY3)).thenReturn(json("{\"utterances\":["
                 + "{\"startMs\":745000,\"endMs\":750000,\"text\":\"before the window\"},"

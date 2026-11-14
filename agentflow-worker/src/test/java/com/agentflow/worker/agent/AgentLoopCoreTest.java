@@ -42,7 +42,7 @@ class AgentLoopCoreTest {
     private final FakeTool research = new FakeTool("web_search");   // 研究 agent 的工具,循环里注册着
     private final FakeTool echo = new FakeTool("echo");             // 这次运行自己的工具
     private final AgentRun run = new AgentRun(1L, 2L, "uuid-qa", "what is rlhf", "m");
-    private final Profile profile = new Profile("[course-qa] 你在回答一门课的问题", List.of(echo), 4000, 12);
+    private final Profile profile = new Profile("[course-qa] 你在回答一门课的问题", List.of(echo), 4000, 12, false);
     private final List<ChatMessage> seed = List.of(new ChatMessage("user", "what is rlhf"));
 
     private AgentLoop loop(List<AgentStep> archived) {
@@ -131,5 +131,53 @@ class AgentLoopCoreTest {
         List<ChatRequest> all = requests(AgentLoop.MAX_STEPS + 1);
         assertNull(all.get(AgentLoop.MAX_STEPS).getTools(), "步数用完后的那次请求不带工具");
         assertEquals(AgentLoop.MAX_STEPS, out.history().size());
+    }
+
+    @Test
+    void researchToolsAreOfferedInTheOrderTheyWereRegistered() {
+        LlmModelProperties props = new LlmModelProperties();
+        LlmModelProperties.Model m = new LlmModelProperties.Model();
+        m.setName("m");
+        props.setModels(List.of(m));
+        when(checkpoint.load(anyString())).thenReturn(List.of());
+        List<AgentTool> registered = List.of(new FakeTool("kb_search"), new FakeTool("web_fetch"),
+                new FakeTool("web_search"), new FakeTool("wiki_search"));
+        when(gateway.chat(any())).thenReturn(answer("{\"answer\":\"ok\",\"sources\":[]}"));
+        new AgentLoop(gateway, registered, checkpoint, mock(TraceEmitter.class), props).run(run);
+        assertEquals(List.of("kb_search", "web_fetch", "web_search", "wiki_search"),
+                requests(1).get(0).getTools().stream().map(t -> t.name()).toList());
+    }
+
+    @Test
+    void aBrokenToolFailsARunThatAsksForItAndIsShownToTheModelOtherwise() {
+        AgentTool broken = new FakeTool("echo") {
+            @Override
+            public String run(JsonNode args) {
+                throw new IllegalStateException("search service is down");
+            }
+        };
+        when(gateway.chat(any())).thenReturn(call("c1", "echo", "{}"), answer("done"));
+        Profile strict = new Profile("p", List.of(broken), 4000, 100, true);
+        assertThrows(IllegalStateException.class, () -> loop(List.of()).converse(run, strict, seed));
+
+        when(gateway.chat(any())).thenReturn(call("c1", "echo", "{}"), answer("done"));
+        Outcome out = loop(List.of()).converse(run, new Profile("p", List.of(broken), 4000, 100, false), seed);
+        assertEquals("done", out.content());
+        assertTrue(out.history().get(0).toolResults().get(0).getContent().startsWith("ERROR"));
+    }
+
+    @Test
+    void aWrongArgumentIsShownToTheModelEvenInAStrictRun() {
+        AgentTool picky = new FakeTool("echo") {
+            @Override
+            public String run(JsonNode args) {
+                throw new IllegalArgumentException("query 不能为空");
+            }
+        };
+        when(gateway.chat(any())).thenReturn(call("c1", "echo", "{}"), call("c2", "echo", "not json"), answer("done"));
+        Outcome out = loop(List.of()).converse(run, new Profile("p", List.of(picky), 4000, 100, true), seed);
+        assertEquals("done", out.content());
+        assertTrue(out.history().get(0).toolResults().get(0).getContent().contains("query 不能为空"));
+        assertTrue(out.history().get(1).toolResults().get(0).getContent().startsWith("ERROR"));
     }
 }
