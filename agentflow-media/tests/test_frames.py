@@ -1,5 +1,6 @@
 import shutil
 import threading
+import time
 import wave
 
 import av
@@ -265,3 +266,44 @@ def test_only_key_frames_come_back_even_when_the_decoder_ignores_the_skip_settin
     out.close()
     ks = [ts for ts, _ in keyframes(path)]
     assert len(ks) == 10 and ks[:3] == [0, 2000, 4000]
+
+
+# ---- 识别限流(docs/open-problems.md P1 第一层) ----
+
+class SlowOcr:
+    """记录同一时刻有几次识别在跑。"""
+
+    def __init__(self):
+        self.active = self.max_active = self.calls = 0
+        self.guard = threading.Lock()
+
+    def read(self, img):
+        with self.guard:
+            self.active += 1
+            self.calls += 1
+            self.max_active = max(self.max_active, self.active)
+        try:
+            time.sleep(0.05)
+            return "some slide text here"
+        finally:
+            with self.guard:
+                self.active -= 1
+
+
+def test_ocr_calls_of_different_lectures_share_a_fixed_number_of_slots(tmp_path, video, monkeypatch):
+    """11 讲一起摄入时每一路识别各开二十多个线程抢 24 个核,单讲从几分钟拖到几十分钟。"""
+    s = media(tmp_path, video)
+    for other in ("a" * 32, "b" * 32, "c" * 32):
+        s.write_json(other, "meta.json", {"mediaKey": other, "audio": "audio.m4a", "video": "video.mp4", "durationMs": 60000})
+        shutil.copy(video, s.dir(other) / "video.mp4")
+    monkeypatch.setattr("app.frames.OCR_SLOTS", threading.BoundedSemaphore(2))
+    ocr, stats = SlowOcr(), Stats()
+    threads = [threading.Thread(target=frames_media, args=(s, k, ocr, stats)) for k in (KEY, "a" * 32, "b" * 32, "c" * 32)]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    assert ocr.calls == 12 and ocr.max_active == 2 and stats.ocr_runs == 4
+
+
+def test_rapid_ocr_reads_the_same_text_with_a_thread_limit():
+    img = slide(SLIDES[0])
+    assert "Gradient descent" in RapidOcr(threads=2).read(img)

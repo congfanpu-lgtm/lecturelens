@@ -7,4 +7,10 @@ ASR_MODEL = os.environ.get("MEDIA_ASR_MODEL", "large-v3")
 ASR_DEVICE = os.environ.get("MEDIA_ASR_DEVICE", "cuda")
 ASR_COMPUTE = os.environ.get("MEDIA_ASR_COMPUTE", "float16")
 ASR_BATCH = int(os.environ.get("MEDIA_ASR_BATCH", "16"))
+# Slide OCR is CPU work. One OCR call gains nothing beyond a few threads, and many calls with the default
+# "one thread per core" each fight for the same cores, so both are bounded: THREADS per call, SLOTS calls at once.
+# Keep SLOTS x THREADS at or below the number of cores (measured values in docs/benchmarks.md section 8).
+OCR_THREADS = int(os.environ.get("MEDIA_OCR_THREADS", "4"))
+# MEDIA_OCR_THREADS=-1 leaves the library's default (one thread per core); the slot default then falls back to 1.
+OCR_SLOTS = int(os.environ.get("MEDIA_OCR_SLOTS", str(max(1, (os.cpu_count() or 4) // OCR_THREADS) if OCR_THREADS > 0 else 1)))
 ALLOWED_HOSTS = {"www.youtube.com", "youtube.com", "m.youtube.com", "youtu.be"}

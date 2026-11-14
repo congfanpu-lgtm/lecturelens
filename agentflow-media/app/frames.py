@@ -1,6 +1,8 @@
 """Slides: decode key frames only, OCR a frame only when the picture changed."""
 import difflib
 import shutil
+import tempfile
+import threading
 from pathlib import Path
 from typing import Iterator, Protocol
 
@@ -8,6 +10,7 @@ import av
 import numpy as np
 from PIL import Image
 
+from . import config
 from .stats import Stats
 from .store import NotFound, Store
 
@@ -21,6 +24,8 @@ BLOCK_SHARE = 0.05              # a block "changed" when more than 5% of its pix
 NOISY_SHARE = 0.5               # a block that changes between more than half of all key-frame pairs is always moving
 MIN_BLOCKS = 2                  # the picture "changed" when at least this many steady blocks changed
 SAME_TEXT = 0.8                 # two OCR results this similar are the same slide read twice
+# At most this many OCR calls run at once, across all lectures (see config.OCR_SLOTS). In-process, like the GPU lock.
+OCR_SLOTS = threading.BoundedSemaphore(config.OCR_SLOTS)
 
 
 def keyframes(video: Path) -> Iterator[tuple[int, Image.Image]]:
@@ -86,10 +91,23 @@ class Ocr(Protocol):
 
 
 class RapidOcr:
-    def __init__(self):
-        from rapidocr_onnxruntime import RapidOCR   # lazy: loads ONNX models
+    def __init__(self, threads: int = config.OCR_THREADS):
+        import rapidocr_onnxruntime   # lazy: loads ONNX models
+        import yaml
 
-        self._engine = RapidOCR()
+        # The thread count can only be set through the library's config file: its three models (detect, classify,
+        # recognise) read it from their own sections, and keyword arguments do not reach all of them.
+        root = Path(rapidocr_onnxruntime.__file__).parent
+        cfg = yaml.safe_load((root / "config.yaml").read_text())
+        for part in ("Det", "Cls", "Rec"):
+            cfg[part]["intra_op_num_threads"] = threads
+            cfg[part]["model_path"] = str(root / cfg[part]["model_path"])
+        with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
+            yaml.safe_dump(cfg, f)
+        try:
+            self._engine = rapidocr_onnxruntime.RapidOCR(config_path=f.name)
+        finally:
+            Path(f.name).unlink(missing_ok=True)
 
     def read(self, img: Image.Image) -> str:
         result, _ = self._engine(np.asarray(img.convert("RGB")))
@@ -120,7 +138,8 @@ def frames_media(store: Store, key: str, ocr: Ocr, stats: Stats) -> dict:
                     continue
                 seen = now   # compare against the last frame we OCRed, so slow fades still add up to a change
                 n_ocr += 1
-                text = ocr.read(img).strip()
+                with OCR_SLOTS:   # shared by all lectures: without it eleven lectures at once thrash the CPU
+                    text = ocr.read(img).strip()
                 if len(text) < MIN_TEXT:
                     continue
                 if text_kept is not None and same_slide(text, text_kept):
