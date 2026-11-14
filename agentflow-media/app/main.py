@@ -15,7 +15,7 @@ from .stats import Stats
 from .store import BadInput, NotFound, Store
 
 app = FastAPI(title="agentflow-media")
-_FRAME_NAME = re.compile(r"\d{9}\.jpg")
+_FRAME_NAME = re.compile(r"\d{9}\.(jpg|png)")   # .jpg: a kept slide; .png: a frame picked for OCR, until the merge
 
 
 @lru_cache
@@ -188,9 +188,9 @@ def get_frames(key: str, store: Store = Depends(get_store)):
 
 @app.get("/media/{key}/frames/{name}")
 def get_frame(key: str, name: str, store: Store = Depends(get_store)):
-    if not _FRAME_NAME.fullmatch(name):   # the name becomes a path: only what frames_media writes is served
+    if not _FRAME_NAME.fullmatch(name):   # the name becomes a path: only what pick and merge write is served
         raise BadInput(f"bad frame name: {name!r}")
     path = store.dir(key) / "frames" / name
     if not path.is_file():
         raise NotFound(f"frame {name} of {key}")
-    return FileResponse(path, media_type="image/jpeg")
+    return FileResponse(path, media_type="image/png" if name.endswith(".png") else "image/jpeg")

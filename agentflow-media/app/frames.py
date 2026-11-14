@@ -155,7 +155,7 @@ def _texts_file(n: int) -> str:
 
 
 def pick(store: Store, key: str) -> dict:
-    """Step 1: save the key frames whose picture changed as frames/<ms>.jpg and list them. No OCR.
+    """Step 1: save the key frames whose picture changed as frames/<ms>.png and list them. No OCR.
     Which frames are picked depends only on the pictures, never on what the OCR reads, so the batches
     can be read in any order and on any machine."""
     # ponytail: 一直在动的块是按整段视频统计的。镜头对着讲台超过一半时长的录像,所有块都会被当成"一直在动",
@@ -185,8 +185,11 @@ def pick(store: Store, key: str) -> dict:
                     if seen is not None and not changed(seen, now, ignore):
                         continue
                     seen = now   # compare against the last frame we picked, so slow fades still add up to a change
-                    files.append(f"{ts_ms:09d}.jpg")
-                    img.save(store.dir(key) / "frames" / files[-1], quality=80)
+                    # Lossless, because this file is what the OCR reads: from a JPEG it finds 16% fewer spaces
+                    # between words (docs/benchmarks.md section 10), and words run together cannot be searched.
+                    # compress_level 1: several times faster to write than the default, somewhat larger.
+                    files.append(f"{ts_ms:09d}.png")
+                    img.save(store.dir(key) / "frames" / files[-1], compress_level=1)
             doc = {"keyframes": n_key, "files": files}
             store.write_json(key, CANDIDATES_FILE, doc)   # written last: a failed run leaves no list
         return {"mediaKey": key, "cached": cached, "candidates": len(doc["files"]), "batches": _batches(len(doc["files"]))}
@@ -294,17 +297,21 @@ def merge(store: Store, key: str, stats: Stats) -> dict:
                 # keeping only the first reading would leave the last bullets out of the index.
                 if len(text) > len(text_kept):
                     text_kept = frames[-1]["text"] = text
-                    frames[-1]["file"] = "frames/" + name
+                    frames[-1]["file"] = name
                 continue
             text_kept = text
-            frames.append({"tsMs": int(name[:9]), "file": "frames/" + name, "text": text})
-        # written before the clean-up: a crash in between leaves stray files, never a result without its images
+            frames.append({"tsMs": int(name[:9]), "file": name, "text": text})
+        # The kept slides become JPEGs for the page (a quarter of the size); the lossless candidates were for the OCR.
+        # Pictures first, then the result, then the clean-up: a crash in between leaves stray files,
+        # never a result without its pictures, and running the merge again repairs it.
+        for f in frames:
+            jpg = "frames/" + f["file"][:9] + ".jpg"
+            Image.open(store.dir(key) / "frames" / f["file"]).convert("RGB").save(store.dir(key) / jpg, quality=80)
+            f["file"] = jpg
         store.write_json(key, FRAMES_FILE, {"frames": frames, "keyframes": candidates["keyframes"],
                                             "ocred": len(candidates["files"])})
-        kept = {f["file"] for f in frames}
         for name in candidates["files"]:
-            if "frames/" + name not in kept:
-                (store.dir(key) / "frames" / name).unlink(missing_ok=True)
+            (store.dir(key) / "frames" / name).unlink(missing_ok=True)
         for old in [store.dir(key) / CANDIDATES_FILE, *store.dir(key).glob("ocr.*.json")]:
             old.unlink(missing_ok=True)
         stats.ocr_runs += 1

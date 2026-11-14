@@ -36,7 +36,7 @@ def test_a_replica_reads_a_batch_through_the_media_service(service):
     ocr = SlideOcr()
     out = frames.ocr_batch(replica(service), KEY, 0, ocr, Stats())
     assert out == {"mediaKey": KEY, "batch": 0, "frames": 2, "cached": False} and ocr.calls == 2
-    assert service.store.read_json(KEY, "ocr.0.json") == {"texts": {"000000000.jpg": SLIDES[0], "000020000.jpg": SLIDES[1]}}
+    assert service.store.read_json(KEY, "ocr.0.json") == {"texts": {"000000000.png": SLIDES[0], "000020000.png": SLIDES[1]}}
     frames.ocr_batch(replica(service), KEY, 1, ocr, Stats())
     assert service.post(f"/media/{KEY}/frames/merge").json()["frames"] == 3
 
@@ -55,7 +55,7 @@ def test_a_replica_passes_on_what_the_media_service_says(service):
     with pytest.raises(NotFound):                                   # 没有这一批
         frames.ocr_batch(replica(service), KEY, 5, SlideOcr(), Stats())
     with pytest.raises(BadInput):                                   # 写回的文件名不是这一批的
-        replica(service).save(KEY, 0, {"000040000.jpg": "x"})
+        replica(service).save(KEY, 0, {"000040000.png": "x"})
     broken = frames.Remote("http://media:8010", lambda method, url, body: (500, b'{"detail":"OSError: disk full"}'))
     with pytest.raises(RuntimeError, match="disk full"):            # 媒体服务自己出了故障:worker 可以重试
         frames.ocr_batch(broken, KEY, 0, SlideOcr(), Stats())

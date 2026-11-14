@@ -352,11 +352,11 @@ def test_pick_saves_candidates_without_reading_them(tmp_path, video, monkeypatch
     s, ocr = media(tmp_path, video), SlideOcr()
     assert frames.pick(s, KEY) == {"mediaKey": KEY, "cached": False, "candidates": 30, "batches": 8}
     doc = s.read_json(KEY, frames.CANDIDATES_FILE)
-    assert doc["keyframes"] == 30 and doc["files"][:2] == ["000000000.jpg", "000002000.jpg"]
+    assert doc["keyframes"] == 30 and doc["files"][:2] == ["000000000.png", "000002000.png"]   # 无损:识别读的就是它
     assert all((s.dir(KEY) / "frames" / f).is_file() for f in doc["files"])
     assert ocr.calls == 0 and s.read_json(KEY, FRAMES_FILE) is None
     assert frames.pick(s, KEY)["cached"] is True                        # 再挑一次:用已有的清单
-    assert frames.Local(s).batch(KEY, 7) == {"files": ["000056000.jpg", "000058000.jpg"], "done": False}
+    assert frames.Local(s).batch(KEY, 7) == {"files": ["000056000.png", "000058000.png"], "done": False}
     with pytest.raises(NotFound):
         frames.Local(s).batch(KEY, 8)
 
@@ -401,6 +401,7 @@ def test_merge_deletes_the_images_it_did_not_keep(tmp_path, video, monkeypatch):
     read_all(s, SlideOcr(), Stats())
     kept = {f["file"] for f in s.read_json(KEY, FRAMES_FILE)["frames"]}
     assert {"frames/" + p.name for p in (s.dir(KEY) / "frames").iterdir()} == kept and len(kept) == 3
+    assert all(name.endswith(".jpg") for name in kept)                                 # 30 张候选的 PNG 都不在了
     assert s.read_json(KEY, frames.CANDIDATES_FILE) is None and s.read_json(KEY, "ocr.0.json") is None   # 中间文件不留
 
 
@@ -426,11 +427,11 @@ def test_storing_texts_for_files_outside_the_batch_is_rejected(tmp_path, video, 
     frames.pick(s, KEY)
     local = frames.Local(s)
     with pytest.raises(BadInput):
-        local.save(KEY, 0, {"000000000.jpg": "a", "../../meta.json": "b"})
+        local.save(KEY, 0, {"000000000.png": "a", "../../meta.json": "b"})
     with pytest.raises(BadInput):
-        local.save(KEY, 0, {"000000000.jpg": "only one of the two"})
+        local.save(KEY, 0, {"000000000.png": "only one of the two"})
     assert s.read_json(KEY, "ocr.0.json") is None
-    local.save(KEY, 0, {"000000000.jpg": "first slide text", "000020000.jpg": "second slide text"})
+    local.save(KEY, 0, {"000000000.png": "first slide text", "000020000.png": "second slide text"})
     assert local.batch(KEY, 0)["done"] is True
 
 
@@ -445,13 +446,19 @@ def api(tmp_path, video):
 def test_the_three_steps_over_http(api, monkeypatch):
     monkeypatch.setattr("app.frames.OCR_BATCH", 2)
     assert api.post(f"/media/{KEY}/frames/pick").json() == {"mediaKey": KEY, "cached": False, "candidates": 3, "batches": 2}
-    assert api.get(f"/media/{KEY}/frames/batches/1").json() == {"files": ["000040000.jpg"], "done": False}
+    assert api.get(f"/media/{KEY}/frames/batches/1").json() == {"files": ["000040000.png"], "done": False}
+    picture = api.get(f"/media/{KEY}/frames/000040000.png")                       # 识别副本就是这样取图的
+    assert picture.status_code == 200 and picture.headers["content-type"] == "image/png"
     assert api.post(f"/media/{KEY}/frames/merge").status_code == 400            # 还有批没识别
     assert api.post(f"/media/{KEY}/frames/batches/0/ocr").json() == {"mediaKey": KEY, "batch": 0, "frames": 2, "cached": False}
-    r = api.put(f"/media/{KEY}/frames/batches/1", json={"texts": {"000040000.jpg": SLIDES[2]}})   # 识别副本写回结果
+    r = api.put(f"/media/{KEY}/frames/batches/1", json={"texts": {"000040000.png": SLIDES[2]}})   # 识别副本写回结果
     assert r.status_code == 200 and r.json() == {"stored": 1}
     assert api.post(f"/media/{KEY}/frames/merge").json() == {"mediaKey": KEY, "cached": False, "frames": 3}
-    assert [f["tsMs"] for f in api.get(f"/media/{KEY}/frames").json()["frames"]] == [0, 20000, 40000]
+    kept = api.get(f"/media/{KEY}/frames").json()["frames"]
+    assert [f["tsMs"] for f in kept] == [0, 20000, 40000]
+    assert [f["file"] for f in kept] == ["frames/000000000.jpg", "frames/000020000.jpg", "frames/000040000.jpg"]
+    assert api.get(f"/media/{KEY}/frames/000040000.jpg").headers["content-type"] == "image/jpeg"   # 留下的转成 JPEG 给页面
+    assert api.get(f"/media/{KEY}/frames/000040000.png").status_code == 404                        # 候选图不留
     assert api.get("/stats").json()["ocrRuns"] == 1
 
 
@@ -464,7 +471,7 @@ def test_the_steps_report_what_is_missing(api):
     assert api.get(f"/media/{KEY}/frames/batches/9").status_code == 404
     assert api.post(f"/media/{KEY}/frames/batches/9/ocr").status_code == 404
     assert api.put(f"/media/{KEY}/frames/batches/0", json={"texts": {"nope.jpg": "x"}}).status_code == 400
-    assert api.put(f"/media/{KEY}/frames/batches/0", json={"texts": {"000000000.jpg": 5}}).status_code == 422
+    assert api.put(f"/media/{KEY}/frames/batches/0", json={"texts": {"000000000.png": 5}}).status_code == 422
 
 
 def test_zero_ocr_slots_is_treated_as_one(monkeypatch):
@@ -478,4 +485,14 @@ def test_zero_ocr_slots_is_treated_as_one(monkeypatch):
     finally:
         monkeypatch.undo()
         importlib.reload(config)
+
+
+def test_the_ocr_reads_exactly_the_decoded_frame(tmp_path, video):
+    """候选帧存成 JPEG 的话,识别会少认约 16% 的空格(实测,docs/benchmarks.md 第 10 节),词粘在一起检索就找不到。
+    所以存成无损的 PNG:识别读到的像素和解码出来的那一帧一模一样。"""
+    s = media(tmp_path, video)
+    frames.pick(s, KEY)
+    decoded = next(img for _, img in keyframes(s.dir(KEY) / "video.mp4"))
+    stored = frames.Local(s).image(KEY, "000000000.png")
+    assert np.array_equal(np.asarray(decoded.convert("RGB")), np.asarray(stored.convert("RGB")))
 
