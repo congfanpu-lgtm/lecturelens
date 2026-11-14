@@ -672,5 +672,22 @@ that run with a clear error rather than being cut short.
 media service counted 0 downloads, 0 transcriptions and 0 slide merges. Killing a worker during ingestion is in
 section 10.
 
+**Transcript spot check** (`eval/course/transcript_check.py`): three lectures, three 10-minute stretches each
+(90 minutes), our transcript aligned word by word with the caption track the uploader put on YouTube. That track
+has markers such as "inaudible" and "non English speech", so it was probably made by people, but that is not
+known; this is a spot check, not a word error rate.
+
+| | Caption words | Our words | Matched | Stretches of 5+ words only in the captions | Only in ours |
+|---|---|---|---|---|---|
+| 9 stretches, 90 minutes | 15,175 | 14,941 (98.5%) | 92.4% | 36, the longest 20 words | 7, the longest 9 words |
+
+No passage is missing and none is invented: the unmatched stretches are a sentence or less, and several are the
+same words written differently (a phone number spelled out against digits, the caption's "inaudible"). The
+voice-activity settings were left as they are.
+
+**Not measured:** how long the download stage of a whole course takes with one worker against three (the design
+asks for it). It would mean downloading 12.7 hours of video from YouTube twice. The other two stages are known:
+transcription does not get faster with more workers (section 7), and the OCR does not on this machine (section 10).
+
 Not done yet, because they need the user or a real model: the question set, the real runs, grading, the judge's
 calibration against 100 hand-labelled pairs, and the comparison with a notebook product.

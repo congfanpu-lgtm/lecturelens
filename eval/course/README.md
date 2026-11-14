@@ -25,6 +25,10 @@
     python3 eval/course/questions.py check --course 1     # 格式、讲次序号、时间有没有超出这一讲
     python3 eval/course/questions.py freeze --course 1    # 写 questions.lock;之后再改题,之前的运行结果就不能用了
 
+单讲题可以让模型先起草(要真实模型),再逐题改写核对:
+
+    python3 eval/course/draft.py --course 1 --per-lecture 4      # 写 questions.draft.jsonl
+
 **题集在看任何系统的结果之前冻结。**
 
 ## 运行、打分
@@ -53,3 +57,10 @@
 - `runs/` 不进仓库(`.gitignore`)。真实运行的汇总(`summary.md`)到时候抄进 `eval/results/` 和 `docs/benchmarks.md`。
 - 每个脚本都有 `--self-check`。
 - 课程环境默认是模拟模型:跑出来的数字只说明链路通了(`docs/benchmarks.md` 第 11 节)。
+
+## 转写质量抽查
+
+    python3 eval/course/transcript_check.py 3 5 9     # 讲次 id;每讲取 3 段各 10 分钟,和 YouTube 上的字幕逐词对齐
+
+结果在 `docs/benchmarks.md` 第 11 节。
+
