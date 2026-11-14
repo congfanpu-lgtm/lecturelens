@@ -53,6 +53,7 @@
   <a class="crumb" id="back" href="courses.html">课程库</a>
   <h1 id="title">…</h1>
   <span class="dim num" id="meta"></span>
+  <a id="askLink" href="#" style="margin-left:auto">向这门课提问 →</a>
 </header>
 <div class="warn" id="warn" hidden></div>
 <div class="cols">
@@ -213,6 +214,7 @@ async function load() {
   $("#meta").textContent = (lecture.durationMs ? clock(lecture.durationMs) + " · " : "")
       + ({READY: "已完成", PARTIAL: "部分完成", FAILED: "失败", INGESTING: "处理中"}[lecture.status] || lecture.status);
   $("#back").href = "courses.html#c=" + lecture.courseId;
+  $("#askLink").href = "qa.html?course=" + lecture.courseId;
   api("/courses/" + lecture.courseId).then(c => { $("#back").textContent = c.name; }).catch(() => {});
   if (lecture.status === "PARTIAL" && lecture.error) {
     $("#warn").hidden = false;

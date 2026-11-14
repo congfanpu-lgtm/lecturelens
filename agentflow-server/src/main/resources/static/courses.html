@@ -68,7 +68,7 @@
   <main>
     <div id="empty" class="dim">先在左边新建一门课。</div>
     <div id="course" hidden>
-      <h1 id="title"></h1>
+      <h1><span id="title"></span> <a id="askLink" href="#" style="font-size:14px;font-weight:400;margin-left:10px">向这门课提问 →</a></h1>
       <form id="newLecture" class="add">
         <input id="source" placeholder="YouTube 链接，或者媒体服务 inbox 目录里的文件名" autocomplete="off">
         <input id="lectureTitle" placeholder="标题（可不填）" maxlength="300" autocomplete="off">
@@ -143,6 +143,7 @@ async function loadCourse() {
   const c = await api("/courses/" + id);
   if (id !== current) return;            // 请求在路上时用户切到了别的课
   $("#title").textContent = c.name;
+  $("#askLink").href = "qa.html?course=" + c.id;
   const body = $("#lectures");
   body.replaceChildren();
   for (const l of c.lectures) body.append(row(l));

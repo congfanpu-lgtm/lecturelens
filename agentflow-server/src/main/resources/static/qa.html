@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LectureLens · 问答</title>
+<style>
+  :root{--ink:#16191d;--body:#2c313a;--t2:#58606c;--dim:#8a919b;--line:#e3e6ea;--wash:#f5f6f8;
+    --blue:#14467c;--run:#dfe8f3;--hl:#edf1f6;--err:#b3261e;--errbg:#fbe9e7;--ok:#14884a;--okbg:#e4f3ea;--warn:#8a5a00;--warnbg:#fdf3dc}
+  *{box-sizing:border-box}
+  [hidden]{display:none!important}
+  body{margin:0;background:#fff;color:var(--ink);
+    font:14px/1.6 -apple-system,"Helvetica Neue","PingFang SC","Microsoft YaHei",sans-serif}
+  a{color:var(--blue);text-decoration:none} a:hover{text-decoration:underline}
+  button{font:inherit;color:inherit;background:none;border:0;padding:0;margin:0;cursor:pointer;text-align:inherit}
+  h2{margin:0 0 8px;font-size:12.5px;font-weight:600;color:var(--t2)}
+  input[type=text]{font:inherit;height:36px;border:1px solid #c5cad2;border-radius:3px;padding:0 10px;width:100%}
+  input[type=text]:focus{outline:2px solid var(--blue);outline-offset:-1px}
+  .btn{height:36px;padding:0 18px;border-radius:3px;border:1px solid var(--ink);background:var(--ink);color:#fff;white-space:nowrap}
+  .btn:disabled{opacity:.45;cursor:default}
+  .link{color:var(--blue);font-size:12.5px} .link:hover{text-decoration:underline}
+  .num{font-variant-numeric:tabular-nums}
+  .dim{color:var(--dim)}
+
+  header{padding:14px 28px;border-bottom:1px solid var(--line);display:flex;gap:14px;align-items:baseline}
+  header h1{margin:0;font-size:17px;font-weight:700}
+  .cols{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);gap:0 32px;padding:18px 28px 40px}
+  form{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px}
+  .tools{display:flex;gap:16px;align-items:center;min-height:28px;margin-top:6px;font-size:12.5px;color:var(--dim)}
+  .msg{color:var(--err);font-size:12.5px;min-height:20px}
+
+  .turn{margin-top:14px;padding:10px 12px;background:var(--wash);border-radius:3px;font-size:12.5px;color:var(--t2)}
+  .turn b{color:var(--body)}
+  .q{margin:22px 0 10px;font-size:16px;font-weight:600}
+  .chips{display:flex;gap:4px;flex-wrap:wrap;margin:8px 0}
+  .chip{font-size:12px;line-height:20px;padding:0 7px;border-radius:3px;background:var(--wash);color:var(--dim);white-space:nowrap}
+  .chip.run{background:var(--run);color:var(--blue)} .chip.ok{background:var(--okbg);color:var(--ok)} .chip.bad{background:var(--errbg);color:var(--err)}
+  .claim{padding:9px 0;border-top:1px solid var(--line)}
+  .ev{display:inline-block;margin:4px 6px 0 0;font-size:12px;line-height:20px;padding:0 7px;border-radius:3px;background:var(--okbg);color:var(--ok)}
+  .ev:hover,.ev.on{outline:2px solid var(--ok);outline-offset:-1px}
+  .gone{padding:9px 0;border-top:1px solid var(--line)}
+  .gone s{color:var(--dim)}
+  .gone div{margin-top:3px;font-size:12.5px;color:var(--warn);background:var(--warnbg);border-radius:3px;padding:3px 8px;display:inline-block}
+  .note{padding:12px 0;color:var(--t2)}
+  .path{margin-top:14px;padding-top:10px;border-top:1px solid var(--line);font-size:12.5px;color:var(--dim);overflow-wrap:anywhere}
+  table{width:100%;border-collapse:collapse;margin-top:6px}
+  th{font-weight:600;font-size:12.5px;color:var(--t2);text-align:left;padding:6px 10px 6px 0;border-bottom:1px solid var(--line)}
+  td{padding:8px 10px 8px 0;border-bottom:1px solid var(--line);vertical-align:top}
+
+  .side{position:sticky;top:16px;align-self:start}
+  .video{position:relative;width:100%;aspect-ratio:16/9;background:#101216}
+  .video #player,.video iframe{position:absolute;inset:0;width:100%;height:100%;border:0}
+  .video .none{position:absolute;inset:0;display:grid;place-items:center;color:#b9c0ca;padding:0 24px;text-align:center}
+  .quote{margin-top:12px;padding:10px 12px;border-left:3px solid var(--ok);background:var(--wash)}
+  .quote .where{font-size:12.5px;color:var(--t2);margin-bottom:4px}
+  .quote .for{font-size:12.5px;color:var(--dim);margin-top:6px}
+  .off{max-width:560px;margin:18vh auto;padding:0 28px;color:var(--t2)}
+</style>
+</head>
+<body>
+<div id="off" class="off" hidden></div>
+<div id="app" hidden>
+<header>
+  <a id="back" href="courses.html">课程库</a>
+  <h1 id="course">…</h1>
+  <span class="dim" id="meta"></span>
+</header>
+<div class="cols">
+  <div>
+    <form id="ask">
+      <input type="text" id="question" maxlength="500" autocomplete="off" placeholder="在这门课里问一个问题，比如：第 1 讲和第 3 讲讲的后训练有什么不同？">
+      <button class="btn" id="go" type="submit">提问</button>
+    </form>
+    <div class="tools">
+      <span>每条结论都要带"第几讲、哪段时间、原话"，逐条核验后才显示；通不过的会划掉并写明原因。</span>
+      <button class="link" id="clear" type="button" hidden>清空对话</button>
+    </div>
+    <div class="msg" id="msg"></div>
+    <div id="turns"></div>
+    <div id="answer"></div>
+  </div>
+  <div class="side">
+    <div class="video"><div id="player"></div><div class="none" id="noPlayer">点一个证据标签，视频会跳到那一秒</div></div>
+    <div id="evidence"></div>
+  </div>
+</div>
+</div>
+<script>
+const $ = s => document.querySelector(s);
+function el(tag, cls, text) {           // 问题、结论、原文都是外来内容:只走 textContent
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+}
+const courseId = Number(new URLSearchParams(location.search).get("course"));
+const STAGE = {QA_AGENT: "找答案", QA_VERIFY: "核验"};
+const SOURCE = {speech: "语音", slide: "幻灯片"};
+const LAYER = {0: "没有给出证据", 1: "第 1 层没通过(时间不合法)", 2: "第 2 层没通过(引文找不到)", 3: "第 3 层没通过(原文不支持结论)"};
+let lectures = new Map();               // lectureId → {seq, title, sourceUrl}
+let history = [];                       // 本次打开以来的问答,最多 3 轮,随下一次提问发给接口
+let poll = null, player = null, playerReady = false, playing = null, byLecture = false, current = null;
+
+async function api(path, opts) {
+  const r = await fetch("/api/v1" + path, opts);
+  const data = await r.json().catch(() => null);
+  if (!r.ok) {
+    const e = new Error((data && data.error) || ("请求失败（HTTP " + r.status + "）"));
+    e.status = r.status;
+    throw e;
+  }
+  return data;
+}
+
+function clock(ms) {
+  const s = Math.floor(ms / 1000), h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60;
+  return (h ? h + ":" + String(m).padStart(2, "0") : String(m).padStart(2, "0")) + ":" + String(s % 60).padStart(2, "0");
+}
+
+function youtubeId(url) {
+  try {
+    const u = new URL(url);
+    if (u.hostname === "youtu.be") return u.pathname.slice(1) || null;
+    if (!/(^|\.)youtube\.com$/.test(u.hostname)) return null;
+    if (u.searchParams.get("v")) return u.searchParams.get("v");
+    const m = u.pathname.match(/^\/(?:live|embed|shorts)\/([^/]+)/);
+    return m ? m[1] : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function showEvidence(ev, claimText, chip) {
+  document.querySelectorAll(".ev.on").forEach(x => x.classList.remove("on"));
+  chip.classList.add("on");
+  const l = lectures.get(ev.lectureId) || {seq: ev.seq, title: ""};
+  const box = $("#evidence");
+  box.replaceChildren();
+  const q = el("div", "quote");
+  q.append(el("div", "where", "第 " + l.seq + " 讲 · " + clock(ev.startMs) + "–" + clock(ev.endMs) + " · " + (SOURCE[ev.source] || ev.source)
+      + (l.title ? " · " + l.title : "")), el("div", null, "“" + ev.quote + "”"), el("div", "for", "支持的结论：" + claimText));
+  box.append(q);
+  const vid = l.sourceUrl ? youtubeId(l.sourceUrl) : null;
+  $("#noPlayer").hidden = !!vid;
+  if (!vid) {
+    $("#noPlayer").textContent = "这一讲是本地文件，暂不支持在页面里播放。";
+    return;
+  }
+  const start = Math.floor(ev.startMs / 1000);
+  if (!playerReady) {                  // 第一次点证据时才加载播放器
+    playing = {vid, start};
+    if (!window.YT) {
+      window.onYouTubeIframeAPIReady = () => {
+        player = new YT.Player("player", {videoId: playing.vid, playerVars: {rel: 0, start: playing.start, autoplay: 1},
+          events: {onReady: () => { playerReady = true; }}});
+      };
+      const s = document.createElement("script");
+      s.src = "https://www.youtube.com/iframe_api";
+      document.head.append(s);
+    }
+    return;
+  }
+  if (playing && playing.vid === vid) {
+    player.seekTo(start, true);
+    player.playVideo();
+  } else {
+    player.loadVideoById({videoId: vid, startSeconds: start});
+  }
+  playing = {vid, start};
+}
+
+function evidenceChips(claim) {
+  const box = el("div");
+  for (const ev of claim.evidence) {
+    const l = lectures.get(ev.lectureId) || {seq: ev.seq};
+    const chip = el("button", "ev num", "L" + l.seq + " · " + clock(ev.startMs) + " ✓");
+    chip.type = "button";
+    chip.title = ev.quote;
+    chip.onclick = () => showEvidence(ev, claim.text, chip);
+    box.append(chip);
+  }
+  return box;
+}
+
+function render(a) {
+  current = a;
+  const box = $("#answer");
+  box.replaceChildren(el("div", "q", a.question));
+  const chips = el("div", "chips");
+  let round = 0;
+  for (const s of a.stages) {
+    if (s.kind === "QA_AGENT") round++;
+    const label = (STAGE[s.kind] || s.kind) + (round > 1 ? "（第 " + round + " 轮）" : "");
+    const cls = s.status === "COMPLETED" ? "chip ok" : s.status === "FAILED" ? "chip bad" : "chip run";
+    chips.append(el("span", cls, label + (s.seconds != null ? " " + s.seconds + "s" : "")));
+  }
+  box.append(chips);
+  if (a.status === "RUNNING") {
+    box.append(el("div", "note", round > 1 ? "上一轮有结论没通过核验，正在带着原因重新回答…" : "正在这门课里找答案…"));
+    return;
+  }
+  if (a.status === "FAILED") {
+    box.append(el("div", "note", "这次提问没有完成：" + (a.error || "未知原因")));
+    return;
+  }
+  if (a.notFound) box.append(el("div", "note", "这门课里没有讲到这个问题。"));
+  else if (!a.claims.length) box.append(el("div", "note", "没有能通过核验的结论。"));
+
+  const seqs = new Set(a.claims.flatMap(c => c.evidence.map(e => (lectures.get(e.lectureId) || {seq: e.seq}).seq)));
+  if (seqs.size > 1) {
+    const t = el("button", "link", byLecture ? "按结论看" : "按讲次对比");
+    t.type = "button";
+    t.onclick = () => { byLecture = !byLecture; render(current); };
+    box.append(t);
+  }
+  if (byLecture && seqs.size > 1) {
+    const table = el("table"), head = el("tr");
+    head.append(el("th", null, "讲次"), el("th", null, "这一讲里的结论和证据"));
+    table.append(head);
+    for (const seq of [...seqs].sort((x, y) => x - y)) {
+      const tr = el("tr"), cell = el("td");
+      for (const c of a.claims) {
+        const mine = c.evidence.filter(e => (lectures.get(e.lectureId) || {seq: e.seq}).seq === seq);
+        if (!mine.length) continue;
+        cell.append(el("div", null, c.text), evidenceChips({text: c.text, evidence: mine}));
+      }
+      tr.append(el("td", "num", "L" + seq), cell);
+      table.append(tr);
+    }
+    box.append(table);
+  } else {
+    for (const c of a.claims) {
+      const row = el("div", "claim");
+      row.append(el("div", null, c.text), evidenceChips(c));
+      box.append(row);
+    }
+  }
+  for (const d of a.dropped) {
+    const row = el("div", "gone");
+    row.append(el("s", null, d.text), el("br"), el("div", null, "已拿掉 · " + (LAYER[d.layer] || "没通过核验") + "：" + d.reason));
+    box.append(row);
+  }
+  const calls = a.toolCalls.map(t => t.tool + " " + t.args).join(" → ");
+  box.append(el("div", "path", "检索路径：" + (calls || "没有调用工具") + " · " + a.rounds + " 轮 · "
+      + (a.usage.promptTokens + a.usage.completionTokens) + " token"));
+}
+
+function showTurns() {
+  const box = $("#turns");
+  box.replaceChildren();
+  for (const t of history) {
+    const d = el("div", "turn");
+    d.append(el("b", null, t.question), el("br"), el("span", null, t.answer));
+    box.append(d);
+  }
+  $("#clear").hidden = !history.length;
+}
+
+async function watch(uuid) {
+  const a = await api("/questions/" + uuid);
+  render(a);
+  if (a.status === "RUNNING") {
+    poll = setTimeout(() => watch(uuid).catch(e => { $("#msg").textContent = e.message; $("#go").disabled = false; }), 2000);
+    return;
+  }
+  $("#go").disabled = false;
+  if (a.status === "COMPLETED") {       // 记进对话,下一次提问带上
+    const text = a.notFound ? "这门课里没有讲到。" : a.claims.map(c => c.text).join(" ") || "没有能通过核验的结论。";
+    history.push({question: a.question, answer: text});
+    history = history.slice(-3);
+  }
+}
+
+$("#ask").onsubmit = async e => {
+  e.preventDefault();
+  const question = $("#question").value.trim();
+  if (!question) return;
+  clearTimeout(poll);
+  $("#msg").textContent = "";
+  $("#go").disabled = true;
+  byLecture = false;
+  showTurns();                          // 上一轮的问答收进上面的对话记录
+  try {
+    const r = await api("/courses/" + courseId + "/questions", {method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({question, history})});
+    $("#question").value = "";
+    await watch(r.taskUuid);
+  } catch (err) {
+    $("#msg").textContent = err.message;
+    $("#go").disabled = false;
+  }
+};
+
+$("#clear").onclick = () => { history = []; showTurns(); };
+
+async function load() {
+  let c;
+  try {
+    c = await api("/courses/" + courseId);
+  } catch (e) {
+    $("#off").hidden = false;
+    $("#off").textContent = e.status === 404 ? "找不到这门课（或者课程功能没有开启）。" : "加载失败：" + e.message;
+    return;
+  }
+  $("#app").hidden = false;
+  document.title = c.name + " · 问答 · LectureLens";
+  $("#course").textContent = c.name;
+  $("#back").href = "courses.html#c=" + c.id;
+  const ready = c.lectures.filter(l => l.status === "READY" || l.status === "PARTIAL");
+  $("#meta").textContent = "可以提问的讲次：" + ready.length + " / " + c.lectures.length;
+  for (const l of c.lectures) lectures.set(l.id, {seq: l.seq, title: l.title, sourceUrl: l.sourceUrl});
+  if (!ready.length) {
+    $("#go").disabled = true;
+    $("#msg").textContent = "这门课还没有处理好的讲次，先去课程库添加。";
+  }
+}
+
+load();
+</script>
+</body>
+</html>
