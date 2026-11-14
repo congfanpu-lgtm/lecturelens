@@ -1,5 +1,9 @@
 # 课程录播专用:独立的容器名和数据卷,不占宿主机端口(server 除外,映射到 18090)。用法见 scripts/course-env.sh。
-# worker 固定用模拟模型:.env 里可能是真模型和 key。两个 worker 各写一遍:compose 2.40 下经锚点引用的 !reset 不生效。
+# worker 默认用模拟模型,而且不读 .env / 环境里通用的 LLM_PROVIDER、OPENAI_API_KEY(那里可能是真模型和 key)。
+# 要用真实模型(评测)必须显式给 COURSE_ 开头的变量,key 只经环境变量传进来,不落文件:
+#   COURSE_LLM_PROVIDER=openai COURSE_LLM_MODEL=<型号> COURSE_OPENAI_BASE_URL=<地址> COURSE_OPENAI_API_KEY=<key>
+#   [COURSE_OPENAI_EXTRA_BODY=<JSON>] [COURSE_OPENAI_TIMEOUT_SECONDS=600] ./scripts/course-env.sh up
+# 用完不带这些变量再 up 一次,就回到模拟模型。两个 worker 各写一遍:compose 2.40 下经锚点引用的 !reset 不生效。
 # 模拟模型默认不延迟;演练杀 worker 时用 LLM_MOCK_DELAY_MS=4000 ./scripts/course-env.sh up,否则 agent 瞬间跑完来不及杀。
 # worker 等媒体服务最多等 1 小时(MEDIA_TIMEOUTMS),Kafka 的处理时限要比它长(AGENTFLOW_WORKER_MAX_POLL_INTERVAL_MS)。
 # 每个 worker 可以有自己的识别地址(OCR_URL_1、OCR_URL_2,指向 scripts/ocr-replicas.sh 起的识别副本);不设就由媒体服务自己识别。
@@ -22,14 +26,20 @@ services:
   worker-1:
     container_name: !reset null
     extra_hosts: ["host.docker.internal:host-gateway"]
-    environment: {LLM_PROVIDER: mock, LLM_DEFAULTMODEL: mock-small, LLM_MODEL: mock-small, LLM_MOCK_DELAYMS: "${LLM_MOCK_DELAY_MS:-0}",
-                  OPENAI_API_KEY: "", TAVILY_API_KEY: "", MEDIA_BASEURL: "http://host.docker.internal:8010",
+    environment: {LLM_PROVIDER: "${COURSE_LLM_PROVIDER:-mock}", LLM_DEFAULTMODEL: "${COURSE_LLM_MODEL:-mock-small}",
+                  LLM_MODEL: "${COURSE_LLM_MODEL:-mock-small}", LLM_MOCK_DELAYMS: "${LLM_MOCK_DELAY_MS:-0}",
+                  OPENAI_API_KEY: "${COURSE_OPENAI_API_KEY:-}", OPENAI_BASE_URL: "${COURSE_OPENAI_BASE_URL:-https://api.openai.com/v1}",
+                  OPENAI_EXTRA_BODY: "${COURSE_OPENAI_EXTRA_BODY:-}", OPENAI_TIMEOUT_SECONDS: "${COURSE_OPENAI_TIMEOUT_SECONDS:-60}",
+                  TAVILY_API_KEY: "", MEDIA_BASEURL: "http://host.docker.internal:8010",
                   MEDIA_OCRBASEURL: "${OCR_URL_1:-}",
                   MEDIA_TIMEOUTMS: "3600000", AGENTFLOW_WORKER_MAX_POLL_INTERVAL_MS: "3900000"}
   worker-2:
     container_name: !reset null
     extra_hosts: ["host.docker.internal:host-gateway"]
-    environment: {LLM_PROVIDER: mock, LLM_DEFAULTMODEL: mock-small, LLM_MODEL: mock-small, LLM_MOCK_DELAYMS: "${LLM_MOCK_DELAY_MS:-0}",
-                  OPENAI_API_KEY: "", TAVILY_API_KEY: "", MEDIA_BASEURL: "http://host.docker.internal:8010",
+    environment: {LLM_PROVIDER: "${COURSE_LLM_PROVIDER:-mock}", LLM_DEFAULTMODEL: "${COURSE_LLM_MODEL:-mock-small}",
+                  LLM_MODEL: "${COURSE_LLM_MODEL:-mock-small}", LLM_MOCK_DELAYMS: "${LLM_MOCK_DELAY_MS:-0}",
+                  OPENAI_API_KEY: "${COURSE_OPENAI_API_KEY:-}", OPENAI_BASE_URL: "${COURSE_OPENAI_BASE_URL:-https://api.openai.com/v1}",
+                  OPENAI_EXTRA_BODY: "${COURSE_OPENAI_EXTRA_BODY:-}", OPENAI_TIMEOUT_SECONDS: "${COURSE_OPENAI_TIMEOUT_SECONDS:-60}",
+                  TAVILY_API_KEY: "", MEDIA_BASEURL: "http://host.docker.internal:8010",
                   MEDIA_OCRBASEURL: "${OCR_URL_2:-}",
                   MEDIA_TIMEOUTMS: "3600000", AGENTFLOW_WORKER_MAX_POLL_INTERVAL_MS: "3900000"}
