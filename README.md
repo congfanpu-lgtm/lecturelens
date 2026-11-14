@@ -1,7 +1,55 @@
-# AgentFlow
+# LectureLens
 
-[![CI](https://github.com/congfanpu-lgtm/agentflow/actions/workflows/ci.yml/badge.svg)](https://github.com/congfanpu-lgtm/agentflow/actions/workflows/ci.yml)
-· [中文](README.zh.md) · design doc [`docs/specs/2026-07-11-agentflow-design.md`](docs/specs/2026-07-11-agentflow-design.md)
+[![CI](https://github.com/congfanpu-lgtm/lecturelens/actions/workflows/ci.yml/badge.svg)](https://github.com/congfanpu-lgtm/lecturelens/actions/workflows/ci.yml)
+· [中文](README.zh.md) · measurements: [`docs/benchmarks.md`](docs/benchmarks.md) sections 7 and 8
+
+**An AI learning platform for lecture recordings.** Paste the link of a lecture: LectureLens downloads it,
+transcribes it, reads the slides, cuts it into searchable segments and builds a concept directory. Then you can
+search across the whole course, and a click on a transcript line, a concept or a slide moves the video to that
+second.
+
+![The lecture page: player, transcript, concept directory and slides; a click moves the video to that second](docs/img/lecturelens-lecture.jpg)
+
+| Part | Status |
+|---|---|
+| Ingest: download, transcription, slide OCR, segment index, concept directory | done, measured on the Berkeley Agentic AI MOOC (Fall 2025) recordings |
+| Course library page and lecture page | done |
+| Search across a course (dense + BM25, scoped to the course) | done |
+| Q&A agent whose every claim carries a timestamped, verified piece of evidence | in progress |
+| Public evaluation | not started |
+
+```mermaid
+flowchart LR
+  A[paste a link] --> I[import<br/>yt-dlp / local file]
+  I --> T[transcribe<br/>faster-whisper]
+  I --> F[key frames + OCR<br/>PyAV + ONNX Runtime]
+  T --> X[index<br/>segments → pgvector + BM25]
+  F --> X
+  X --> C[concept directory<br/>LLM]
+```
+
+Each step is an asynchronous subtask on Kafka, advanced by a state machine in MySQL; transcription and slide OCR
+run side by side. Retries with a dead-letter queue, timeout re-dispatch and idempotency keys make a step safe to
+repeat; download, transcript and slide results are cached by the SHA-256 of the audio, so a lecture submitted
+twice does no work the second time.
+
+| Measured on one machine (24 cores, one RTX 5080 Laptop GPU), single runs | |
+|---|---|
+| A 77-minute lecture, from link to searchable | 240 s |
+| The same link again | 12 s, all from cache |
+| Transcription of a 2-hour lecture | 47× realtime |
+| Slide OCR before and after dedup (2-hour lecture) | 974 → 263 OCR calls, 806 s → 238 s, no slide lost |
+
+How to run it, the design and the limits are in the [Chinese README](README.zh.md); the design document is
+[`docs/superpowers/specs/2026-11-13-course-video-qa-design.md`](docs/superpowers/specs/2026-11-13-course-video-qa-design.md).
+
+---
+
+# The engine underneath (AgentFlow)
+
+LectureLens is built on a task-orchestration engine that was written earlier and first used by a research
+agent. The rest of this page describes the engine: multi-stage tasks, failure recovery, rate limiting, a
+resumable ReAct agent, fault drills and load tests.
 
 **A crash-tolerant multi-agent research system on a Kafka worker pool.** Ask a question → a planner LLM splits it
 into sub-questions → each sub-question is researched in parallel by a ReAct agent (native tool calling:

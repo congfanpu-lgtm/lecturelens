@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AgentFlow 课程库</title>
+<title>LectureLens 课程库</title>
 <style>
   :root{--ink:#16191d;--body:#2c313a;--t2:#58606c;--dim:#8a919b;--line:#e3e6ea;--wash:#f5f6f8;
     --blue:#14467c;--run:#dfe8f3;--err:#b3261e;--errbg:#fbe9e7;--ok:#14884a;--okbg:#e4f3ea}
@@ -56,7 +56,7 @@
 <div id="off" class="off" hidden>课程功能没有开启（<code>agentflow.course.enabled</code>）。</div>
 <div id="app" class="frame" hidden>
   <aside class="rail">
-    <div class="brand">AgentFlow 课程库</div>
+    <div class="brand">LectureLens</div>
     <h2>课程</h2>
     <nav id="courses"></nav>
     <form id="newCourse">
@@ -75,7 +75,7 @@
         <button class="btn" type="submit">添加一讲</button>
       </form>
       <div class="msg" id="lectureMsg"></div>
-      <div class="hint">添加后依次：导入 → 转写 ∥ 截帧 → 建索引 → 知识点目录。每一步是 AgentFlow 的一个子任务，失败会自动重试。</div>
+      <div class="hint">添加后依次：导入 → 转写 ∥ 截帧 → 建索引 → 知识点目录。每一步是一个异步子任务，失败会自动重试。</div>
       <table>
         <thead><tr><th>#</th><th>标题</th><th>时长</th><th>状态</th><th>步骤（成功的显示用时）</th><th></th></tr></thead>
         <tbody id="lectures"></tbody>

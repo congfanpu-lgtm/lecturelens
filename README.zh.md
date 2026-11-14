@@ -1,9 +1,99 @@
-# AgentFlow
+# LectureLens
 
-> [English](README.md) · 本文为中文版 · 🏗️ 架构图:[`docs/architecture.md`](docs/architecture.md) · 📄 简历 bullets:[`docs/resume-bullets.md`](docs/resume-bullets.md)
+> AI 课程视频学习平台 · [English](README.md) · 实测数据:[`docs/benchmarks.md`](docs/benchmarks.md) 第 7、8 节 ·
+> 设计文档:[`docs/superpowers/specs/2026-11-13-course-video-qa-design.md`](docs/superpowers/specs/2026-11-13-course-video-qa-design.md)
 
-分布式多 Agent 任务编排平台(W1–8 已完成 + Web 控制台;核心系统全部实测)。
-设计文档见 `docs/specs/2026-07-11-agentflow-design.md`。
+贴一个课程录播的链接,LectureLens 把这一讲下载、转写、识别幻灯片、切成可检索的片段,并生成知识点目录。
+之后可以在整门课的范围里检索;点一句逐字稿、一个知识点或一张幻灯片,视频就跳到那一秒。
+
+![单讲页:播放器、逐字稿、知识点目录、幻灯片,点一下视频就跳到那一秒](docs/img/lecturelens-lecture.jpg)
+
+（图里的知识点目录是模拟模型生成的占位内容。）
+
+## 现在的状态
+
+| 部分 | 状态 |
+|---|---|
+| 摄入:下载、语音转写、幻灯片识别、分段索引、知识点目录 | 已完成,在 Berkeley Agentic AI MOOC(2025 秋)的课程录播上实测 |
+| 课程库页、单讲页(播放器、逐字稿、知识点目录、幻灯片,点击跳转) | 已完成 |
+| 整门课范围的检索(向量 + BM25 混合,按课程隔离) | 已完成 |
+| 问答 agent:每条结论带可核对的时间戳证据,经三层核验 | 开发中 |
+| 公开评测:题集、对比基线、统计 | 未开始 |
+
+## 一讲课是怎么处理的
+
+```mermaid
+flowchart LR
+  A[贴链接] --> I[导入<br/>yt-dlp / 本地文件]
+  I --> T[转写<br/>faster-whisper]
+  I --> F[截帧 + OCR<br/>PyAV + ONNX Runtime]
+  T --> X[建索引<br/>分段 → pgvector + BM25]
+  F --> X
+  X --> C[知识点目录<br/>LLM]
+```
+
+每一步是 Kafka 上的一个异步子任务,由 MySQL 里的状态机推进;转写和截帧并行。
+
+- **失败恢复**:重试 Topic(5 秒 / 30 秒 / 5 分钟)加死信队列,超时巡检重投,Redis 幂等键防止重复执行。
+  链接不合规这类重试也没用的错误直接判失败,不走重试阶梯。
+- **不重复干活**:下载、转写、截帧的结果按音频内容的 SHA-256 缓存。同一讲再提交一次,12 秒完成,不下载、不转写、不识别。
+- **转写**:一讲一个子任务,整段交给 faster-whisper 批量推理,一张显卡上同一时刻只跑一路。
+  实测 1、2、3 个 worker 并行转写吞吐不变、显存线性上涨,所以不切片分发。
+- **幻灯片**:只解码关键帧;先找出画面里一直在动的区域(讲者的摄像头小窗)并忽略,画面真的变了才做文字识别;
+  文字相近的读数只留最完整的一次。
+- **检索**:片段进 pgvector 的 `segments` 表,向量和 BM25 两路用 RRF 融合,每一路都限定在一门课里。
+- **知识点目录**:模型看到按时间编号的片段,只输出"知识点 + 片段编号",时间由代码按编号查出来,
+  所以目录里不会出现这一讲里不存在的时间点。
+
+## 实测
+
+一台 24 核、一张 RTX 5080 Laptop(16GB)的机器,一次运行的结果。详见 [`docs/benchmarks.md`](docs/benchmarks.md) 第 7、8 节。
+
+| | 结果 |
+|---|---|
+| 77 分钟的一讲,从贴链接到可以检索 | 240 秒(导入 28、转写 196、截帧 153、建索引 4) |
+| 同一个链接再加一次 | 12 秒,全部命中缓存 |
+| 转写(2 小时的课,单独跑) | 47 倍实时,1298 条带时间戳的句子 |
+| 截帧去重前后(2 小时的课) | 文字识别 974 次 → 263 次,806 秒 → 238 秒,没有丢页 |
+| 播放列表链接(不支持) | 立即失败并写明原因,不重试 |
+| 测试 | Java 282 个、检索服务 40 个、媒体服务 85 个 |
+
+## 跑起来
+
+需要一台有 NVIDIA 显卡的机器(转写)和 Docker。都用模拟模型,不需要 key。
+
+    # 1. 媒体服务(下载、转写、截帧识别),跑在有显卡的宿主机上
+    cd agentflow-media
+    python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt -r requirements-gpu.txt
+    MEDIA_HOST=$(docker network inspect bridge -f '{{(index .IPAM.Config 0).Gateway}}') MEDIA_ROOT=~/lecturelens-data ./run.sh
+
+    # 2. 其余的服务(MySQL、Kafka、Redis、MongoDB、pgvector、检索服务、server、2 个 worker)
+    ./scripts/course-env.sh up
+    open http://127.0.0.1:18090/courses.html
+
+媒体服务和课程功能的更多细节在下文的"媒体服务"和"课程录播"两节。
+
+当前的范围限制:只支持单个 YouTube 视频和本地文件(播放列表、B 站还没有);本地文件能摄入但不能在页面里播放;
+课程环境里的知识点目录是模拟模型生成的,只说明流程通了。
+
+## 目录
+
+| 目录 | 内容 |
+|---|---|
+| `agentflow-media/` | Python / FastAPI:下载、转写、截帧识别,结果按内容哈希缓存 |
+| `agentflow-server/` | Java / Spring Boot:课程和讲次、任务状态机、阶段推进、接口、页面 |
+| `agentflow-worker/` | Java / Spring Boot:消费子任务,摄入的五个处理器、分段、LLM 调用 |
+| `agentflow-rag/` | Python / FastAPI:pgvector 上的片段索引和混合检索 |
+| `docs/` | 设计文档、实施计划、实测记录 |
+
+模块名里的 agentflow 是底层任务编排引擎的名字。
+
+---
+
+# 底层:任务编排引擎(AgentFlow)
+
+LectureLens 建在一个自己写的分布式任务编排引擎上。下面是引擎本身的说明:
+多阶段任务、失败恢复、限流、可续跑的 ReAct agent、故障演练和压测。它最早的用途是下面这个研究 agent。
 
 ## 研究 Agent(RESEARCH_AGENT)
 

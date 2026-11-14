@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AgentFlow 课程 · 单讲</title>
+<title>LectureLens · 单讲</title>
 <style>
   :root{--ink:#16191d;--body:#2c313a;--t2:#58606c;--dim:#8a919b;--line:#e3e6ea;--wash:#f5f6f8;
     --blue:#14467c;--hl:#edf1f6;--err:#b3261e;--ok:#14884a;--warn:#8a5a00;--warnbg:#fdf3dc}
@@ -208,7 +208,7 @@ $("#q").oninput = e => {
 
 async function load() {
   const lecture = await api("/lectures/" + id);
-  document.title = (lecture.title || "单讲") + " · AgentFlow 课程";
+  document.title = (lecture.title || "单讲") + " · LectureLens";
   $("#title").textContent = "第 " + lecture.seq + " 讲 · " + (lecture.title || lecture.sourceUrl || lecture.sourcePath);
   $("#meta").textContent = (lecture.durationMs ? clock(lecture.durationMs) + " · " : "")
       + ({READY: "已完成", PARTIAL: "部分完成", FAILED: "失败", INGESTING: "处理中"}[lecture.status] || lecture.status);
