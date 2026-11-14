@@ -57,7 +57,6 @@ public class AgentLoop {
 
     private final LlmGateway gateway;
     private final Map<String, AgentTool> tools;
-    private final List<ToolSpec> specs;
     private final AgentCheckpoint checkpoint;
     private final TraceEmitter trace;
     private final LlmModelProperties props;
@@ -66,25 +65,54 @@ public class AgentLoop {
                      TraceEmitter trace, LlmModelProperties props) {
         this.gateway = gateway;
         this.tools = toolList.stream().collect(Collectors.toMap(AgentTool::name, Function.identity()));
-        this.specs = toolList.stream()
-                .map(t -> new ToolSpec(t.name(), t.description(), t.parametersSchema())).toList();
         this.checkpoint = checkpoint;
         this.trace = trace;
         this.props = props;
     }
 
+    /** 一次运行用什么提示词、哪些工具、输出上限多少。循环本身对所有 agent 都一样。 */
+    public record Profile(String systemPrompt, List<AgentTool> tools, int maxTokens) {
+    }
+
+    /** 循环的结果:模型最后的回答原文、用了几步、token 用量、全部已完成的步骤(含续跑前存档的)。 */
+    public record Outcome(String content, int stepCount, Usage usage, List<AgentStep> history) {
+    }
+
+    /** 研究 agent:全部已注册的工具 + 研究用的提示词,收尾时按 URL 核对引用。 */
     public ObjectNode run(AgentRun run) {
-        List<ChatMessage> messages = new ArrayList<>();
-        messages.add(new ChatMessage("system", Prompts.system(Prompts.AGENT, run.question())));
-        messages.add(new ChatMessage("user", run.question()));
-        Map<String, String> cache = new HashMap<>();
+        Profile research = new Profile(Prompts.system(Prompts.AGENT, run.question()),
+                new ArrayList<>(tools.values()), MAX_TOKENS);
+        Outcome out = converse(run, research, List.of(new ChatMessage("user", run.question())));
         Set<String> seenUrls = new LinkedHashSet<>();
         Map<String, StringBuilder> textByUrl = new HashMap<>();   // URL → 它所在的那段工具结果,核对摘录用
+        for (AgentStep s : out.history()) {
+            for (ChatMessage result : s.toolResults()) {
+                seenUrls.addAll(TextUtil.urls(result.getContent()));
+                indexByUrl(result.getContent(), textByUrl);
+            }
+        }
+        return finish(run, out.stepCount(), out.content(), seenUrls, textByUrl, out.usage());
+    }
+
+    /**
+     * ReAct 循环本身,和具体是哪种 agent 无关。seed 是 system 之后、循环之前的消息(问题、历史对话等)。
+     * 只能调用 profile 里的工具:模型要别的工具会得到 "ERROR: 未知工具"。
+     */
+    public Outcome converse(AgentRun run, Profile profile, List<ChatMessage> seed) {
+        Map<String, AgentTool> available = profile.tools().stream()
+                .collect(Collectors.toMap(AgentTool::name, Function.identity()));
+        List<ToolSpec> offered = profile.tools().stream()
+                .map(t -> new ToolSpec(t.name(), t.description(), t.parametersSchema())).toList();
+        List<ChatMessage> messages = new ArrayList<>();
+        messages.add(new ChatMessage("system", profile.systemPrompt()));
+        messages.addAll(seed);
+        Map<String, String> cache = new HashMap<>();
         Usage usage = new Usage();
 
         // 1) 续跑:把已完成的步骤原样放回对话,工具结果进缓存,不重新调用
-        List<AgentStep> done = checkpoint.load(run.subtaskUuid());
-        for (AgentStep s : done) {
+        List<AgentStep> history = new ArrayList<>(checkpoint.load(run.subtaskUuid()));
+        int resumedFrom = history.size();
+        for (AgentStep s : history) {
             messages.add(s.assistant());
             messages.addAll(s.toolResults());
             for (int i = 0; i < s.toolResults().size(); i++) {
@@ -92,32 +120,28 @@ public class AgentLoop {
                 if (!out.startsWith(ERROR)) {
                     cache.put(cacheKey(s.assistant().getToolCalls().get(i)), out);
                 }
-                seenUrls.addAll(TextUtil.urls(out));
-                indexByUrl(out, textByUrl);
             }
             usage.add(s.usage());
         }
-        if (!done.isEmpty()) {
-            log.info("agent 从存档续跑 subtaskUuid={} fromStep={}", run.subtaskUuid(), done.size());
+        if (resumedFrom > 0) {
+            log.info("agent 从存档续跑 subtaskUuid={} fromStep={}", run.subtaskUuid(), resumedFrom);
             emit(run, TraceStage.RESUMED, OM.createObjectNode()
-                    .put("fromStep", done.size()).put("workerId", WORKER_ID));
+                    .put("fromStep", resumedFrom).put("workerId", WORKER_ID));
         }
 
         // 2) ReAct 主循环
-        for (int step = done.size() + 1; step <= MAX_STEPS; step++) {
-            ChatResponse resp = gateway.chat(request(run.model(), messages, specs));
+        for (int step = resumedFrom + 1; step <= MAX_STEPS; step++) {
+            ChatResponse resp = gateway.chat(request(run.model(), messages, offered, profile.maxTokens()));
             Usage stepUsage = Usage.of(resp, props);
             usage.add(stepUsage);
             if (resp.getToolCalls().isEmpty()) {
-                return finish(run, step, resp.getContent(), seenUrls, textByUrl, usage);
+                return new Outcome(resp.getContent(), step, usage, history);
             }
             ChatMessage assistant = ChatMessage.assistant(resp.getContent(), resp.getToolCalls());
             List<ChatMessage> results = new ArrayList<>();
             ArrayNode calls = OM.createArrayNode();
             for (ToolCall c : resp.getToolCalls()) {
-                String out = execute(c, cache);
-                seenUrls.addAll(TextUtil.urls(out));
-                indexByUrl(out, textByUrl);
+                String out = execute(c, cache, available);
                 results.add(ChatMessage.tool(c.getId(), out));
                 calls.addObject().put("tool", c.getName()).put("args", c.getArgumentsJson())
                         .put("resultPreview", TextUtil.truncate(out, PREVIEW_CHARS));
@@ -125,7 +149,9 @@ public class AgentLoop {
             messages.add(assistant);
             messages.addAll(results);
             // 一步完整结束才存档:崩溃在此之前 → 该步重做(工具只读,重做无副作用)
-            checkpoint.append(run.subtaskUuid(), new AgentStep(step, assistant, results, stepUsage));
+            AgentStep done = new AgentStep(step, assistant, results, stepUsage);
+            checkpoint.append(run.subtaskUuid(), done);
+            history.add(done);
             ObjectNode detail = OM.createObjectNode().put("step", step)
                     .put("thought", resp.getContent()).put("workerId", WORKER_ID);
             detail.set("calls", calls);
@@ -134,20 +160,20 @@ public class AgentLoop {
 
         // 3) 步数耗尽:去掉工具,强制作答(防死循环)
         messages.add(new ChatMessage("user", Prompts.FORCE_ANSWER));
-        ChatResponse resp = gateway.chat(request(run.model(), messages, null));
+        ChatResponse resp = gateway.chat(request(run.model(), messages, null, profile.maxTokens()));
         usage.add(Usage.of(resp, props));
-        return finish(run, MAX_STEPS + 1, resp.getContent(), seenUrls, textByUrl, usage);
+        return new Outcome(resp.getContent(), MAX_STEPS + 1, usage, history);
     }
 
-    private String execute(ToolCall c, Map<String, String> cache) {
+    private String execute(ToolCall c, Map<String, String> cache, Map<String, AgentTool> available) {
         String key = cacheKey(c);
         String hit = cache.get(key);
         if (hit != null) {
             return hit;
         }
-        AgentTool tool = tools.get(c.getName());
+        AgentTool tool = available.get(c.getName());
         if (tool == null) {
-            return ERROR + "未知工具 " + c.getName() + ",可用工具:" + tools.keySet();
+            return ERROR + "未知工具 " + c.getName() + ",可用工具:" + available.keySet();
         }
         String out;
         try {
@@ -227,8 +253,8 @@ public class AgentLoop {
     }
 
     /** 拷贝 messages:后续追加不影响已发出的请求。 */
-    private static ChatRequest request(String model, List<ChatMessage> messages, List<ToolSpec> tools) {
-        ChatRequest r = new ChatRequest(model, new ArrayList<>(messages), MAX_TOKENS);
+    private static ChatRequest request(String model, List<ChatMessage> messages, List<ToolSpec> tools, int maxTokens) {
+        ChatRequest r = new ChatRequest(model, new ArrayList<>(messages), maxTokens);
         r.setTools(tools);
         return r;
     }
