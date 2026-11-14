@@ -156,6 +156,61 @@ class CourseVerifyProcessorTest {
     }
 
     @Test
+    void theJudgeSeesTheTextAroundTheQuoteNotTheStartOfTheWindow() throws Exception {
+        // 时间窗里有一千多字:引文在后半段,紧跟着一句把它否掉的话。只给判官开头 600 字的话,两句都不在里面
+        when(media.transcript(K3)).thenReturn(OM.readTree("{\"utterances\":["
+                + "{\"startMs\":750000,\"endMs\":770000,\"text\":\"" + "Let me first recap last week. ".repeat(40) + "\"},"
+                + "{\"startMs\":770000,\"endMs\":780000,\"text\":\"" + REAL + "\"},"
+                + "{\"startMs\":780000,\"endMs\":790000,\"text\":\"But that is simply wrong, as we will see.\"}]}"));
+        judgeSays("{\"verdicts\":[{\"claim\":0,\"supported\":false,\"reason\":\"讲者随后否定了这句话\"}]}");
+        run(claim("Reward models are trained on human preferences.", good()));
+        String sent = sentToJudge();
+        assertTrue(sent.contains(REAL + " But that is simply wrong"), sent);
+    }
+
+    @Test
+    void aSlideQuoteIsShownToTheJudgeWithItsOwnSlide() throws Exception {
+        // 引用的那张幻灯片前面还显示着一张字很多的:判官要看到被引用的这一张,不是前一张的开头
+        when(media.frameList(K3)).thenReturn(OM.readTree("{\"frames\":["
+                + "{\"tsMs\":700000,\"file\":\"frames/000700000.jpg\",\"text\":\"" + "Course logistics and grading. ".repeat(30) + "\"},"
+                + "{\"tsMs\":740000,\"file\":\"frames/000740000.jpg\",\"text\":\"Reward modeling\\nfrom human preferences\\nStep 2: train the policy\"}]}"));
+        judgeSays("{\"verdicts\":[{\"claim\":0,\"supported\":true,\"reason\":\"ok\"}]}");
+        run(claim("The slide lists reward modeling.", evidence(103, 740000, 760000, "slide", "Reward modeling from human preferences")));
+        String sent = sentToJudge();
+        assertTrue(sent.contains("Step 2: train the policy"), sent);
+    }
+
+    @Test
+    void verdictsNumberedFromOneAreNotAppliedToOtherClaims() {
+        // 判官从 1 数起:第 1 条(好的)的判定落在第 2 条(坏的)头上。宁可这一步重来,也不能把判定安到别的结论上
+        judgeSays("{\"verdicts\":[{\"claim\":1,\"supported\":true,\"reason\":\"ok\"},{\"claim\":2,\"supported\":false,\"reason\":\"no\"}]}");
+        assertThrows(IllegalStateException.class, () -> run(claim("Good claim.", good()), claim("Bad claim.", good())));
+        judgeSays("{\"verdicts\":[{\"claim\":-1,\"supported\":true,\"reason\":\"ok\"}]}");
+        assertThrows(IllegalStateException.class, () -> run(claim("Good claim.", good())));
+    }
+
+    @Test
+    void aRejectionWinsWhenTheJudgeRulesTwiceOnOneClaim() throws Exception {
+        judgeSays("{\"verdicts\":[{\"claim\":0,\"supported\":true,\"reason\":\"ok\"},{\"claim\":0,\"supported\":false,\"reason\":\"其实不支持\"}]}");
+        JsonNode out = run(claim("A claim.", good()));
+        assertEquals(0, out.get("claims").size());
+        assertEquals("其实不支持", out.get("dropped").get(0).get("reason").asText());
+    }
+
+    @Test
+    void aClaimNumberWrittenAsTextStillCounts() throws Exception {
+        judgeSays("{\"verdicts\":[{\"claim\":\"0\",\"supported\":true,\"reason\":\"ok\"}]}");
+        assertEquals(1, run(claim("A claim.", good())).get("claims").size());
+    }
+
+    @Test
+    void evidenceTheAgentStepCouldNotReadIsDroppedWithItsOwnReason() throws Exception {
+        JsonNode d = run(claim("A claim.", "{\"invalid\":\"证据的时间看不懂:around noon\"}")).get("dropped").get(0);
+        assertEquals(1, d.get("layer").asInt());
+        assertEquals("证据的时间看不懂:around noon", d.get("reason").asText());
+    }
+
+    @Test
     void aClaimTheJudgeSkippedIsNotAccepted() throws Exception {
         judgeSays("{\"verdicts\":[{\"claim\":1,\"supported\":true,\"reason\":\"ok\"}]}");
         JsonNode out = run(claim("First claim.", good()), claim("Second claim.", good()));

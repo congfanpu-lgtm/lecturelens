@@ -88,7 +88,9 @@ public class CourseVerifyProcessor implements SubtaskProcessor {
             for (JsonNode e : claim.path("evidence")) {
                 Lecture lecture = lectures.get(e.path("lectureId").asLong());
                 Verdict v;
-                if (lecture == null) {
+                if (e.hasNonNull("invalid")) {   // 上一步没看懂这条证据的讲次或时间:原因照实写,不说成"没有给出证据"
+                    v = new Verdict(false, 1, e.get("invalid").asText());
+                } else if (lecture == null) {
                     v = new Verdict(false, 1, "证据指向的讲次不在这门课里");
                 } else {
                     v = EvidenceChecker.check(
@@ -124,7 +126,7 @@ public class CourseVerifyProcessor implements SubtaskProcessor {
                             transcripts.get(lecture.mediaKey()), frames.get(lecture.mediaKey()));
                     user.append("\n  原文(L").append(lecture.seq()).append(' ').append(clock(e.path("startMs").asLong()))
                             .append('-').append(clock(e.path("endMs").asLong())).append("):")
-                            .append(TextUtil.truncate(context.replace('\n', ' '), MAX_CONTEXT_CHARS))
+                            .append(around(context, e.path("quote").asText(), MAX_CONTEXT_CHARS))
                             .append("\n  其中引用的一句:").append(e.path("quote").asText().replace('\n', ' '));
                 }
             }
@@ -139,8 +141,16 @@ public class CourseVerifyProcessor implements SubtaskProcessor {
             }
             Map<Integer, JsonNode> byClaim = new HashMap<>();
             for (JsonNode v : verdicts) {
-                if (v.path("claim").isIntegralNumber()) {
-                    byClaim.putIfAbsent(v.path("claim").asInt(), v);
+                JsonNode n = v.path("claim");
+                int i = n.isIntegralNumber() ? n.asInt()
+                        : n.isTextual() && n.asText().trim().matches("\\d{1,4}") ? Integer.parseInt(n.asText().trim()) : -1;
+                if (i < 0 || i >= candidates.size()) {
+                    // 编号对不上(比如判官从 1 数起)时,每条判定都可能落在别的结论头上:整份判定作废,这一步重来
+                    throw new IllegalStateException("判官的判定指向不存在的结论:" + n);
+                }
+                // 同一条结论判了两次:有一次说不支持就按不支持算
+                if (!byClaim.containsKey(i) || !v.path("supported").asBoolean(false)) {
+                    byClaim.put(i, v);
                 }
             }
             for (int i = 0; i < candidates.size(); i++) {
@@ -161,6 +171,20 @@ public class CourseVerifyProcessor implements SubtaskProcessor {
         out.set("dropped", dropped);
         out.set("usage", OM.valueToTree(usage));
         return out.toString();
+    }
+
+    /**
+     * 给判官看的那段原文:以引文为中心截取。前两层核对的是整个时间窗的文字,一个 90 秒的片段就有一两千字;
+     * 只给开头的话,引文和它前后那几句(比如紧跟着的"但这是错的")常常不在里面,幻灯片则会给成前一张的开头。
+     */
+    static String around(String context, String quote, int max) {
+        String flat = context.replaceAll("\\s+", " ").trim();
+        if (flat.length() <= max) {
+            return flat;
+        }
+        int at = Math.max(0, TextUtil.normalize(flat).indexOf(TextUtil.normalize(quote)));
+        int from = Math.max(0, Math.min(at - Math.max(0, max - quote.length()) / 2, flat.length() - max));
+        return (from > 0 ? "…" : "") + flat.substring(from, from + max) + (from + max < flat.length() ? "…" : "");
     }
 
     /** 这一讲没有截到幻灯片(媒体服务返回 404):当作没有幻灯片,语音证据照常核验。 */
