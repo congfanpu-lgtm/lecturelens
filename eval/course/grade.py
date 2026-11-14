@@ -79,13 +79,21 @@ def grade_dir(run_dir, ask, model, log=print):
         done = {(g["qid"], g["system"], g["round"], g.get("taskUuid")) for g in score.read_jsonl(path)}
     todo = [k for k in rows if (*k, rows[k].get("taskUuid")) not in done]   # 分数跟着那一次运行:重跑过的要重新打
     log(f"{len(todo)} 条要打分,{len(done)} 条已经有分")
+    failed = 0
     with open(path, "a", encoding="utf-8") as out:
         for key in todo:
-            g = grade_row(questions[key[0]], rows[key], ask)
+            try:
+                g = grade_row(questions[key[0]], rows[key], ask)
+            except Exception as e:   # 打分模型没按格式回,或者接口出错:这一条先空着,别的照打
+                failed += 1
+                log(f"{key} 没打成:{type(e).__name__}: {str(e)[:120]}")
+                continue
             out.write(json.dumps({"qid": key[0], "system": key[1], "round": key[2], "taskUuid": rows[key].get("taskUuid"),
                                   "model": model if g["by"] == "model" else None, **g}, ensure_ascii=False) + "\n")
             out.flush()
-    return len(todo)
+    if failed:
+        log(f"{failed} 条没打成;再跑一次只重打这几条")
+    return len(todo) - failed
 
 
 def self_check():
@@ -145,6 +153,19 @@ def self_check():
         assert grades[1]["score"] == 1.0 and grades[1]["model"] is None                                # 课里没讲的题:规则给分
         assert grade_dir(d, ask, "grader-1", quiet) == 0 and len(calls) == 1                           # 接着打:都有了
         assert score.score_dir(d)["systems"]["S1"]["correct"] == 0.75        # score.py 读得懂这里写的 grades.jsonl
+        # 打分模型有一条没按格式回:这一条先空着,别的照打;下次再跑只重打这一条
+        write([("s1", "S3", 1, row(["a"], uuid="u3")), ("s1", "S3", 2, row(["b"], uuid="u4"))])
+        flaky = iter([ValueError("no JSON object"), {"hits": [1, 1]}, {"hits": [1, 0]}])
+
+        def sometimes(system, user):
+            reply = next(flaky)
+            if isinstance(reply, Exception):
+                raise reply
+            return reply
+
+        assert grade_dir(d, sometimes, "grader-1", quiet) == 1
+        assert grade_dir(d, sometimes, "grader-1", quiet) == 1
+        assert sorted(g["score"] for g in score.read_jsonl(os.path.join(d, "grades.jsonl")) if g["system"] == "S3") == [0.5, 1.0]
     print("self-check ok")
 
 
@@ -164,7 +185,8 @@ def main():
     if os.path.exists(args.env_file):
         os.environ.update(run_eval.read_env_file(args.env_file))
     judge = run_eval.Judge(args.model)
-    n = grade_dir(args.run_dir, lambda system, user: judge.ask(system, user, max_tokens=300), args.model)
+    # 打分模型偶尔先逐条说理由再给 JSON,300 个 token 不够它说完
+    n = grade_dir(args.run_dir, lambda system, user: judge.ask(system, user, max_tokens=1000), args.model)
     print(f"打了 {n} 条;重新出报告:python3 eval/course/score.py {args.run_dir}")
     return 0
 
