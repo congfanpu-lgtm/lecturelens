@@ -194,4 +194,17 @@ class MockLlmClientTest {
         org.junit.jupiter.api.Assertions.assertTrue(overclaim.get("claims").get(0).get("text").asText().contains("UNSUPPORTED"));
         org.junit.jupiter.api.Assertions.assertTrue(HIT.contains(overclaim.get("claims").get(0).get("evidence").get(0).get("quote").asText()));
     }
+
+    @Test
+    void judgeRejectsOnlyClaimsMarkedUnsupported() throws Exception {
+        String user = "问题:what is reward modeling\n\n结论 0:MOCK 结论 UNSUPPORTED\n  原文(L3 12:30-13:25):…\n\n结论 1:Reward models use preferences.\n  原文(L3 12:30-13:25):…";
+        com.agentflow.common.llm.ChatResponse resp = new MockLlmClient().chat(new com.agentflow.common.llm.ChatRequest("mock-small",
+                java.util.List.of(new com.agentflow.common.llm.ChatMessage("system", com.agentflow.worker.agent.Prompts.JUDGE),
+                        new com.agentflow.common.llm.ChatMessage("user", user)), 1500));
+        com.fasterxml.jackson.databind.JsonNode v = new com.fasterxml.jackson.databind.ObjectMapper().readTree(resp.getContent()).get("verdicts");
+        org.junit.jupiter.api.Assertions.assertEquals(2, v.size());
+        org.junit.jupiter.api.Assertions.assertEquals(0, v.get(0).get("claim").asInt());
+        org.junit.jupiter.api.Assertions.assertFalse(v.get(0).get("supported").asBoolean());
+        org.junit.jupiter.api.Assertions.assertTrue(v.get(1).get("supported").asBoolean());
+    }
 }

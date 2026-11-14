@@ -40,6 +40,7 @@ public class MockLlmClient implements LlmClient {
             "between", "about", "versus", "when", "where", "there", "their", "have");
 
     private static final Pattern FIRST_ITEM = Pattern.compile("(?m)^\\[1] (.+)$");
+    private static final Pattern CLAIM_LINE = Pattern.compile("(?m)^结论 (\\d+):(.*)$");
     private static final Pattern HIT_BLOCK = Pattern.compile("(?m)^\\[L(\\d+) (\\S+) (speech|slide)]\\n(.+)$");
     private static final Pattern SEGMENT_LINE = Pattern.compile("(?m)^\\[(\\d+)] \\S+ (.*)$");
 
@@ -72,6 +73,8 @@ public class MockLlmClient implements LlmClient {
             resp = concepts(lastUser(msgs));
         } else if (system.startsWith(Prompts.COURSE_QA_TAG)) {
             resp = courseQa(request, msgs);
+        } else if (system.startsWith(Prompts.JUDGE_TAG)) {
+            resp = judge(lastUser(msgs));
         } else {
             resp = summarize(lastUser(msgs));
         }
@@ -141,6 +144,19 @@ public class MockLlmClient implements LlmClient {
     }
 
     /** 每日简报剧本:把第 1 条条目当成一个事件,引文就是它的标题(逐字,能通过 BriefProcessor 的核对)。 */
+    /** 判官:每条结论都给判定;结论里带 UNSUPPORTED 的判为不支持(演练核验的第 3 层),其余支持。 */
+    private ChatResponse judge(String user) {
+        ObjectNode out = OM.createObjectNode();
+        ArrayNode verdicts = out.putArray("verdicts");
+        Matcher claim = CLAIM_LINE.matcher(user);
+        while (claim.find()) {
+            boolean supported = !claim.group(2).contains("UNSUPPORTED");
+            verdicts.addObject().put("claim", Integer.parseInt(claim.group(1))).put("supported", supported)
+                    .put("reason", supported ? "MOCK 判官:原文支持这条结论" : "MOCK 判官:原文没有说到这一点");
+        }
+        return new ChatResponse(out.toString(), null, null);
+    }
+
     /**
      * 课程问答:先检索一次;有命中就用第一条命中里的原话作答(引文真的在工具结果里,能通过文字核对);没有命中就说找不到。
      * 问题里带 FABRICATE:引文换成一句没人说过的话(演练核验的第 2 层);带 UNSUPPORTED:结论里带上这个词(演练判官)。
