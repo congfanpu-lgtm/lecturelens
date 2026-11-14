@@ -106,6 +106,26 @@ class EvidenceCheckerTest {
     }
 
     @Test
+    void aSlideQuoteThatDiffersFromTheOcrTextOnlyInSpacingPasses() {
+        // 识别出来的文字常常把词连在一起("usemoregpus"),模型引用时写成正常的分词。
+        // 第一轮真实评测里,agent 的幻灯片引文有三成只因为这个没通过。
+        JsonNode glued = json("[{\"tsMs\":20000,\"file\":\"f.jpg\","
+                + "\"text\":\"systems: data parallelism\\ngoal:usemoregpus\\n1.copymodel&optimizeron eachgpu\"}]");
+        passes(EvidenceChecker.check(new Evidence(7, 3, 20_000, 40_000, "slide", "Goal: use more GPUs"), DURATION, UTTERANCES, glued));
+        passes(EvidenceChecker.check(new Evidence(7, 3, 20_000, 40_000, "slide", "copy model & optimizer on each GPU"),
+                DURATION, UTTERANCES, glued));
+        // 字母对不上的照样不通过;去掉空格和标点之后太短的也不通过(到处都能找到)
+        fails(2, EvidenceChecker.check(new Evidence(7, 3, 20_000, 40_000, "slide", "Goal: use fewer GPUs"), DURATION, UTTERANCES, glued));
+        fails(2, EvidenceChecker.check(new Evidence(7, 3, 20_000, 40_000, "slide", "g o a l : u s e"), DURATION, UTTERANCES, glued));
+    }
+
+    @Test
+    void aSpeechQuoteIsStillComparedWithItsSpacing() {
+        // 逐字稿是分好词的:讲话引文不放宽
+        fails(2, check(5_000, 12_000, "speech", "Gradientdescent updatesthe parameters"));
+    }
+
+    @Test
     void anUnknownSourceFailsAtLayerOne() {
         fails(1, check(5000, 18000, "frame", "Gradient descent updates the parameters"));
         fails(1, check(5000, 18000, null, "Gradient descent updates the parameters"));

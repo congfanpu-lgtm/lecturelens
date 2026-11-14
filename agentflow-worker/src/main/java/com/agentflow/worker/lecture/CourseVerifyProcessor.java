@@ -203,7 +203,11 @@ public class CourseVerifyProcessor implements SubtaskProcessor {
         if (flat.length() <= max) {
             return flat;
         }
-        int at = Math.max(0, TextUtil.normalize(flat).indexOf(TextUtil.normalize(quote)));
+        int at = TextUtil.normalize(flat).indexOf(TextUtil.normalize(quote));
+        if (at < 0) {
+            at = EvidenceChecker.locateLetters(flat, quote);   // 幻灯片引文:空格和识别文字不一样时按字母找
+        }
+        at = Math.max(0, at);
         int from = Math.max(0, Math.min(at - Math.max(0, max - quote.length()) / 2, flat.length() - max));
         return (from > 0 ? "…" : "") + flat.substring(from, from + max) + (from + max < flat.length() ? "…" : "");
     }

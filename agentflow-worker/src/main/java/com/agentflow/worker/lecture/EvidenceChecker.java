@@ -9,7 +9,7 @@ import java.util.List;
 /**
  * 核验的第 1、2 层,纯函数:一条证据说"第几讲、哪段时间、原话是什么",这里检查
  * (1) 这段时间在这一讲里真实存在、而且确实有这种来源的内容;
- * (2) 引用的原话真的出现在那段时间的逐字稿(或那时显示的幻灯片文字)里。
+ * (2) 引用的原话真的出现在那段时间的逐字稿(或那时显示的幻灯片文字)里。讲话逐字比;幻灯片只比字母和数字。
  *
  * <p>只做文字上的核对。原话是真的、但并不支持结论,由第 3 层(判官模型)判断。
  */
@@ -51,10 +51,49 @@ public final class EvidenceChecker {
         if (quote.length() < MIN_QUOTE_CHARS) {
             return new Verdict(false, 2, "引用的原文太短(不到 " + MIN_QUOTE_CHARS + " 个字符),不能当证据");
         }
-        if (!TextUtil.normalize(text).contains(quote)) {
+        if (!TextUtil.normalize(text).contains(quote) && !("slide".equals(e.source()) && sameLetters(text, e.quote()))) {
             return new Verdict(false, 2, "引用的原文在 " + where + " 里找不到");
         }
         return new Verdict(true, 0, null);
+    }
+
+    /**
+     * 幻灯片的引文:只比字母和数字。识别出来的文字空格和标点都不可靠(词连在一起、冒号变成点),
+     * 模型引用时会写成正常的分词,逐字符比就对不上——第一轮真实评测里三成的幻灯片引文只因为这个没通过。
+     * 讲话的逐字稿是分好词的,不走这里。
+     */
+    private static boolean sameLetters(String text, String quote) {
+        return lettersOnly(quote).length() >= MIN_QUOTE_CHARS && locateLetters(text, quote) >= 0;
+    }
+
+    private static String lettersOnly(String s) {
+        StringBuilder letters = new StringBuilder();
+        for (int i = 0; i < s.length(); i++) {
+            char c = Character.toLowerCase(s.charAt(i));
+            if (Character.isLetterOrDigit(c)) {
+                letters.append(c);
+            }
+        }
+        return letters.toString();
+    }
+
+    /** 只看字母和数字时,quote 在 text 里从第几个字符开始;找不到返回 -1。 */
+    static int locateLetters(String text, String quote) {
+        String q = lettersOnly(quote);
+        if (q.isEmpty()) {
+            return -1;
+        }
+        StringBuilder letters = new StringBuilder();
+        List<Integer> at = new ArrayList<>();
+        for (int i = 0; i < text.length(); i++) {
+            char c = Character.toLowerCase(text.charAt(i));
+            if (Character.isLetterOrDigit(c)) {
+                letters.append(c);
+                at.add(i);
+            }
+        }
+        int k = letters.indexOf(q);
+        return k < 0 ? -1 : at.get(k);
     }
 
     /**

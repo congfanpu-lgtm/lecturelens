@@ -314,4 +314,11 @@ class CourseVerifyProcessorTest {
         judgeSays("{\"verdicts\":[{\"id\":\"c1\",\"supported\":true,\"reason\":\"ok\"}]}");
         assertEquals(1, run(claim("Reward models are trained on human preferences.", good())).get("claims").size());
     }
+
+    @Test
+    void theJudgeContextIsCutAroundASlideQuoteWhoseSpacingDiffersFromTheOcrText() {
+        String context = "x".repeat(700) + " goal:usemoregpus " + "y".repeat(700);
+        String shown = CourseVerifyProcessor.around(context, "Goal: use more GPUs", 200);
+        assertTrue(shown.contains("goal:usemoregpus"), shown);
+    }
 }
