@@ -26,3 +26,24 @@
     python3 eval/course/questions.py freeze --course 1    # 写 questions.lock;之后再改题,之前的运行结果就不能用了
 
 **题集在看任何系统的结果之前冻结。**
+
+## 运行、打分
+
+被比较的系统都是同一个 `COURSE_QA` 任务,只是 payload 里的 `eval` 选项不同:
+
+| 系统 | 是什么 | `eval` |
+|---|---|---|
+| S1 | 完整系统:agent + 三层核验 | (不带) |
+| S2 | 固定检索流水线:检索一次 → 一次模型调用 → 核验 | `{"mode":"rag"}` |
+| S3 | agent,核验不调判官 | `{"judge":false}` |
+| B1 | 长上下文基线:整门课的逐字稿放进一次调用,核验只做前两层 | `{"mode":"long","judge":false}` |
+
+    python3 eval/course/run.py --name pilot --course 1 --systems S1,S2,S3 --rounds 3     # 中断后再跑同一条命令会接着跑
+    python3 eval/course/score.py eval/course/runs/pilot                                   # 不调模型的指标 + 置信区间
+    python3 eval/course/grade.py eval/course/runs/pilot --model <打分模型>                # 答对率;之后再 score 一次
+
+- `run.py` 和课程环境在同一台机器上跑(默认连 `127.0.0.1:18090`);`grade.py` 只需要运行目录和 `.env` 里的模型地址、key,
+  可以在别的机器上跑。
+- `runs/` 不进仓库(`.gitignore`)。真实运行的汇总(`summary.md`)到时候抄进 `eval/results/` 和 `docs/benchmarks.md`。
+- 每个脚本都有 `--self-check`。
+- 课程环境默认是模拟模型:跑出来的数字只说明链路通了(`docs/benchmarks.md` 第 11 节)。

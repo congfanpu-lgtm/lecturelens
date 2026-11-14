@@ -24,3 +24,6 @@ __pycache__/
 
 # 媒体服务下载的视频、转写和截帧(不进仓库)
 agentflow-media/data/
+
+# 课程问答评测的原始运行结果(汇总另存进 eval/results/)
+eval/course/runs/

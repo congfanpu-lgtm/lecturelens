@@ -646,3 +646,31 @@ The media service counted 0 downloads, 3 transcriptions and 3 slide merges for t
 had finished was done again, and the transcripts and slides are identical to the original ones.
 
 Tests after this work: Java 393 (common 6, server 163, worker 224), retrieval service 44, media service 110.
+
+## 11. Evaluation tooling and drills that need no real model (2026-11-14)
+
+The evaluation of the design's section 11 is prepared (plan: `docs/superpowers/plans/2026-11-14-course-video-4-eval.md`,
+tools: `eval/course/`). Nothing here says anything about answer quality: the course environment runs the mock model.
+
+**The four systems run through the engine.** They are the same `COURSE_QA` task with different options
+(`payload.eval`): S1 the full system; S2 a fixed pipeline (one search, one model call, verification); S3 the agent
+without the judge; B1 the whole course's transcripts in one model call. Three example questions, one round each,
+twelve runs, all completed; scoring and the report (`eval/course/score.py`) ran on the result.
+
+| System | Model calls for one question | Tool calls | Prompt size of the answering call (mock estimate) |
+|---|---|---|---|
+| S1 | 3 (agent 2, judge 1) | 1 | about 1,700 tokens in total |
+| S2 | 2 (answer 1, judge 1) | 0 | about 1,300 tokens in total |
+| S3 | 2 (agent 2, no judge) | 1 | about 1,400 tokens in total |
+| B1 | 1 (no judge) | 0 | about 168,000 tokens: the 11 lectures are about 673,000 characters of transcript |
+
+The last row is the one real number here: the long-context baseline reads about a hundred times more per
+question than the others. It fits the limit set for that baseline (800,000 characters); a longer course fails
+that run with a clear error rather than being cut short.
+
+**The whole course added again** (11 lectures, 12.7 hours, into a second course): all searchable after 57 s; the
+media service counted 0 downloads, 0 transcriptions and 0 slide merges. Killing a worker during ingestion is in
+section 10.
+
+Not done yet, because they need the user or a real model: the question set, the real runs, grading, the judge's
+calibration against 100 hand-labelled pairs, and the comparison with a notebook product.
