@@ -98,6 +98,7 @@ def score_row(question, row, judged=True):
         "steps": len(answer.get("toolCalls") or []),
         "tokens_in": usage.get("promptTokens", 0),
         "tokens_out": usage.get("completionTokens", 0),
+        "calls": usage.get("calls"),
         "seconds": row.get("seconds"),
         "claims": len(kept),
     }
@@ -132,10 +133,16 @@ def bootstrap_diff(a, b, n=10000, seed=7):
     return bootstrap([a[q] - b[q] for q in sorted(a.keys() & b.keys())], n, seed)
 
 
-def dollars(tokens_in, tokens_out, meta):
-    """按 meta 里的单价(美元 / 百万 token)算;没给单价返回 None。"""
+def dollars(tokens_in, tokens_out, meta, calls=None):
+    """按 meta 里的单价(美元 / 百万 token)算;没给单价返回 None。
+    有的型号一次调用超过一定长度(tierTokens)时,超出的输入和这次的输出按另一个单价算。只有一次调用的运行
+    (长上下文基线)才知道那一次有多长,所以只对它们分段;多次调用的运行每次都远小于这个长度。"""
     if meta.get("priceIn") is None or meta.get("priceOut") is None:
         return None
+    tier = meta.get("tierTokens")
+    if tier and calls == 1 and tokens_in > tier and meta.get("priceInTier") is not None:
+        return (tier * meta["priceIn"] + (tokens_in - tier) * meta["priceInTier"]
+                + tokens_out * meta.get("priceOutTier", meta["priceOut"])) / 1e6
     return (tokens_in * meta["priceIn"] + tokens_out * meta["priceOut"]) / 1e6
 
 
@@ -152,7 +159,7 @@ def summarise(rows, questions, meta, grades=None, audit=None):
         scored = {(r["qid"], r["round"]): score_row(questions[r["qid"]], r, judged) for r in mine}
         for r in mine:
             sc = scored[(r["qid"], r["round"])]
-            sc["cost"] = None if sc["failed"] else dollars(sc["tokens_in"], sc["tokens_out"], meta)
+            sc["cost"] = None if sc["failed"] else dollars(sc["tokens_in"], sc["tokens_out"], meta, sc.get("calls"))
             g = (grades or {}).get((r["qid"], s, r["round"]))
             sc["correct"] = g[1] if g and g[0] == r.get("taskUuid") else None   # 重跑过的运行,旧的分数不算
             a = (audit or {}).get((r["qid"], s, r["round"]))
@@ -367,6 +374,9 @@ def self_check():
     assert d[1] > 0 and abs(d[0] - 0.75) < 1e-9                              # 差别明显:区间不包含 0
     assert bootstrap_diff({"a": 1}, {"b": 1}) is None                        # 没有共同的题
     assert dollars(1_000_000, 100_000, {"priceIn": 0.1, "priceOut": 0.5}) == 0.15 and dollars(1, 1, {}) is None
+    tiered = {"priceIn": 0.1, "priceOut": 0.5, "tierTokens": 100_000, "priceInTier": 0.5, "priceOutTier": 2.5}
+    assert abs(dollars(200_000, 1_000, tiered, calls=1) - (0.01 + 0.05 + 0.0025)) < 1e-12   # 一次 20 万 token 的调用:超出的部分另一个价
+    assert abs(dollars(200_000, 1_000, tiered, calls=5) - 0.0205) < 1e-12                    # 五次调用加起来 20 万:每次都不超
 
     # 汇总:12 道单讲题 + 12 道跨讲次题;S1 全答对,S2 跨讲次题全错。失败的那次按 0 算
     questions = {f"s{i}": {**q, "id": f"s{i}"} for i in range(12)}

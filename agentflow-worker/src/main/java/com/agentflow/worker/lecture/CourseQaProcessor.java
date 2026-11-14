@@ -87,7 +87,9 @@ public class CourseQaProcessor implements SubtaskProcessor {
         } else if ("long".equals(mode)) {   // 长上下文基线:整门课的逐字稿
             seed.add(new ChatMessage("user", "下面是这门课全部讲次的逐字稿:\n\n" + tools.wholeCourse(lectures)));
         }
-        seed.add(new ChatMessage("user", question));
+        // 没有工具的两种跑法:问题后面再说一遍输出格式。课程内容很长时(整门课约 20 万 token),
+        // 模型会忘了系统提示里的格式要求,答成一段话,结论就都成了"没有证据"——那样比的是记不记得格式,不是答得对不对
+        seed.add(new ChatMessage("user", noTools ? question + "\n\n" + Prompts.COURSE_QA_REMINDER : question));
         if (in.path("feedback").isArray() && !in.get("feedback").isEmpty()) {   // 补一轮:告诉模型上次哪些结论被拿掉、为什么
             StringBuilder sb = new StringBuilder(Prompts.COURSE_QA_FEEDBACK);
             for (JsonNode f : in.get("feedback")) {

@@ -115,6 +115,11 @@ public final class Prompts {
     public static final String COURSE_QA_GIVEN = COURSE_QA_TAG + " 你是一门课的助教,只根据用户消息里给出的课程内容回答问题。"
             + "课程内容分成一段一段,每段开头标着 [L讲次 开始-结束 来源]。没有工具可用,直接作答,只输出 JSON:" + COURSE_QA_OUTPUT;
 
+    /** 没有工具的两种跑法里,跟在问题后面的提醒。 */
+    public static final String COURSE_QA_REMINDER = "(只输出 JSON,格式和系统提示里的一样:"
+            + "{\"notFound\":false,\"claims\":[{\"text\":\"…\",\"evidence\":[{\"lecture\":3,\"at\":\"12:30-13:25\",\"source\":\"speech\",\"quote\":\"…\"}]}]}。"
+            + "每条结论都要带证据,at 照方括号里的时间段抄,quote 逐字复制。)";
+
     /** 核验的第 3 层:原话是真的(前两层已经核对过),但它支持这条结论吗? */
     public static final String JUDGE = JUDGE_TAG + " 你是核对员。用户消息是一个 JSON:question 是学生的问题;claims 里每一项是一条结论"
             + "(id、text)和它引用的课程原文(evidence:where 是第几讲的哪段时间,context 是那里的一段原文,quote 是其中被引用的一句)。"

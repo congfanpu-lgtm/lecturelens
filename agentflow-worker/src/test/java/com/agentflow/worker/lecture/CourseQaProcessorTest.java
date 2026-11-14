@@ -290,7 +290,9 @@ class CourseQaProcessorTest {
         assertTrue(sent.getMessages().get(0).getContent().startsWith(Prompts.COURSE_QA_TAG));
         assertTrue(sent.getMessages().get(1).getContent().contains("[L3 12:30-13:25 speech]\nYou collect human preferences to train a reward model."),
                 sent.getMessages().get(1).getContent());
-        assertEquals(QUESTION, sent.getMessages().get(2).getContent());
+        // 问题后面再说一遍输出格式:课程内容很长时,模型会忘了系统提示里的格式要求,答成一段话(实测:长上下文那一路)
+        String last = sent.getMessages().get(2).getContent();
+        assertTrue(last.startsWith(QUESTION) && last.contains("JSON") && last.contains("\"claims\""), last);
         assertEquals(0, out.get("toolCalls").size());
     }
 
@@ -316,7 +318,8 @@ class CourseQaProcessorTest {
         assertTrue(course.contains("[L1 00:00-00:50 speech]\nWelcome to the first lecture. Today we talk about agents."), course);
         assertTrue(course.contains("[L1 00:50-01:20 speech]\nAn agent uses tools."), course);
         assertTrue(course.contains("[L3 12:30-12:40 speech]\nYou collect human preferences to train a reward model."), course);
-        assertEquals(QUESTION, sent.getMessages().get(2).getContent());
+        assertTrue(sent.getMessages().get(2).getContent().startsWith(QUESTION + "\n"));
+        assertTrue(sent.getMessages().get(2).getContent().contains("\"claims\""));
     }
 
     @Test
