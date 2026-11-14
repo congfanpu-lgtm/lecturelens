@@ -5,11 +5,14 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
+import java.net.ConnectException;
 import java.net.URI;
 import java.net.http.HttpClient;
+import java.net.http.HttpConnectTimeoutException;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
@@ -19,6 +22,7 @@ import java.time.Duration;
  * 那边按内容哈希缓存,同一讲同时来两个请求会排队、第二个拿到缓存,所以这些调用可以放心重试。
  * 和 {@code RagClient} 一样用 JDK HttpClient、固定 HTTP/1.1。
  */
+@Slf4j
 @Component
 @RequiredArgsConstructor
 public class MediaClient {
@@ -57,9 +61,22 @@ public class MediaClient {
      * 各批经 Kafka 分到各个 worker,每个 worker 用自己那台机器上的识别副本,加机器就是加一对"worker + 副本"。
      */
     public JsonNode ocrBatch(String mediaKey, int batch) {
+        String path = "/media/" + mediaKey + "/frames/batches/" + batch + "/ocr";
         String ocr = props.getOcrBaseUrl();
-        return call(ocr == null || ocr.isBlank() ? props.getBaseUrl() : ocr,
-                "POST", "/media/" + mediaKey + "/frames/batches/" + batch + "/ocr", null);
+        if (ocr == null || ocr.isBlank()) {
+            return call("POST", path, null);
+        }
+        try {
+            return call(ocr, "POST", path, null);
+        } catch (IllegalStateException e) {
+            // 副本连不上(机器关了、进程死了):退回媒体服务自己识别。重试的消息总是回到同一个分区、同一个 worker,
+            // 副本一直不在的话这一批会失败到底,而有一批失败这一讲就没有幻灯片。副本在线但这次出错的,照常走重试。
+            if (e.getCause() instanceof ConnectException || e.getCause() instanceof HttpConnectTimeoutException) {
+                log.warn("识别副本连不上,这一批改由媒体服务识别 ocrBaseUrl={} mediaKey={} batch={}", ocr, mediaKey, batch);
+                return call("POST", path, null);
+            }
+            throw e;
+        }
     }
 
     /** 第 3 步:各批的结果按时间合并、去重。有哪一批还没识别,那边会拒绝(400)。 */

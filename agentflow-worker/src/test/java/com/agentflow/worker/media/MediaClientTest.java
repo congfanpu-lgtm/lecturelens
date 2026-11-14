@@ -104,6 +104,43 @@ class MediaClientTest {
     }
 
     @Test
+    void ocrFallsBackToTheMediaServiceWhenTheReplicaCannotBeReached() throws IOException {
+        // 识别副本没起来(机器关了、进程死了):退回媒体服务自己识别。否则这个 worker 分到的每一批都会失败到底,
+        // 而有一批失败,这一讲就一张幻灯片都没有
+        int closed;
+        try (java.net.ServerSocket s = new java.net.ServerSocket(0)) {
+            closed = s.getLocalPort();
+        }
+        reply = "{\"batch\":3,\"frames\":20,\"cached\":false}";
+        MediaProperties props = new MediaProperties();
+        props.setBaseUrl("http://localhost:" + server.getAddress().getPort());
+        props.setOcrBaseUrl("http://localhost:" + closed);
+        assertEquals(20, new MediaClient(props).ocrBatch(KEY, 3).get("frames").asInt());
+        assertEquals(List.of("POST /media/" + KEY + "/frames/batches/3/ocr "), seen);
+    }
+
+    @Test
+    void aReplicaThatAnswersWithAnErrorIsNotBypassed() throws IOException {
+        HttpServer replica = HttpServer.create(new InetSocketAddress(0), 0);
+        replica.createContext("/", ex -> {
+            byte[] b = "{\"detail\":\"RuntimeError: media service answered 500\"}".getBytes(StandardCharsets.UTF_8);
+            ex.sendResponseHeaders(500, b.length);
+            ex.getResponseBody().write(b);
+            ex.close();
+        });
+        replica.start();
+        try {
+            MediaProperties props = new MediaProperties();
+            props.setBaseUrl("http://localhost:" + server.getAddress().getPort());
+            props.setOcrBaseUrl("http://localhost:" + replica.getAddress().getPort());
+            assertThrows(IllegalStateException.class, () -> new MediaClient(props).ocrBatch(KEY, 3));
+            assertTrue(seen.isEmpty(), "副本在线、只是这次出错:走正常的重试,不绕过它");
+        } finally {
+            replica.stop(0);
+        }
+    }
+
+    @Test
     void aBadRequestIsNotWorthRetrying() {
         status = 400;
         reply = "{\"detail\":\"only YouTube links are accepted, got: 'https://evil.example/x'\"}";
