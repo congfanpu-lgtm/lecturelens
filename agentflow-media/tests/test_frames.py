@@ -313,6 +313,16 @@ def test_rapid_ocr_reads_the_same_text_with_a_thread_limit():
     assert "Gradient descent" in RapidOcr(threads=2).read(img)
 
 
+def test_ocr_threads_do_not_spin_while_they_wait_for_work():
+    """推理库的线程默认在两次计算之间空转等活。识别一张图是几十次小计算,线程就一直在空转:
+    实测一个 8 线程的引擎占着 20 个核,真正在算的只有 4 个(docs/benchmarks.md 第 8 节)。"""
+    engine = RapidOcr(threads=2)._engine
+    for session in (engine.text_det.infer, engine.text_cls.infer, engine.text_rec.session):
+        options = session.session.get_session_options()
+        assert options.get_session_config_entry("session.intra_op.allow_spinning") == "0"
+        assert options.intra_op_num_threads == 2
+
+
 # ---- 识别分批并行(docs/superpowers/plans/2026-11-14-ocr-fanout.md) ----
 
 class SlideOcr:
@@ -455,4 +465,17 @@ def test_the_steps_report_what_is_missing(api):
     assert api.post(f"/media/{KEY}/frames/batches/9/ocr").status_code == 404
     assert api.put(f"/media/{KEY}/frames/batches/0", json={"texts": {"nope.jpg": "x"}}).status_code == 400
     assert api.put(f"/media/{KEY}/frames/batches/0", json={"texts": {"000000000.jpg": 5}}).status_code == 422
+
+
+def test_zero_ocr_slots_is_treated_as_one(monkeypatch):
+    """MEDIA_OCR_SLOTS=0 用来建信号量的话,所有识别都会永远等下去。"""
+    import importlib
+
+    from app import config
+    monkeypatch.setenv("MEDIA_OCR_SLOTS", "0")
+    try:
+        assert importlib.reload(config).OCR_SLOTS == 1
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
 

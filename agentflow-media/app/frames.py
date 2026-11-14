@@ -100,10 +100,32 @@ class Ocr(Protocol):
         """Text on the image, lines joined with a newline."""
 
 
+def _stop_spinning() -> None:
+    """ONNX Runtime's worker threads busy-wait ("spin") between two pieces of work by default. Reading one slide
+    is dozens of small inferences, so the threads never stop spinning: measured, one engine with 8 threads kept
+    20 cores busy for work worth 4, and lectures read at the same time starved each other (docs/benchmarks.md
+    section 8). The OCR library has no setting for it, so the place where it builds its session options is wrapped."""
+    from rapidocr_onnxruntime.utils.infer_engine import OrtInferSession
+
+    if getattr(OrtInferSession, "_spinning_off", False):
+        return
+    build = OrtInferSession._init_sess_opts
+
+    def options(cfg):
+        opts = build(cfg)
+        opts.add_session_config_entry("session.intra_op.allow_spinning", "0")
+        return opts
+
+    OrtInferSession._init_sess_opts = staticmethod(options)
+    OrtInferSession._spinning_off = True
+
+
 class RapidOcr:
     def __init__(self, threads: int = config.OCR_THREADS):
         import rapidocr_onnxruntime   # lazy: loads ONNX models
         import yaml
+
+        _stop_spinning()
 
         # The thread count can only be set through the library's config file: its three models (detect, classify,
         # recognise) read it from their own sections, and keyword arguments do not reach all of them.
