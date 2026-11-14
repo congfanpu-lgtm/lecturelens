@@ -67,11 +67,40 @@ class MediaClientTest {
         reply = "{\"utterances\":[{\"startMs\":0,\"endMs\":4200,\"text\":\"Hi.\"}],\"frames\":[]}";
         MediaClient c = client();
         c.transcribe(KEY);
-        c.frames(KEY);
+        c.pickFrames(KEY);
+        c.ocrBatch(KEY, 3);       // 没有单独配识别地址:识别也打到媒体服务
+        c.mergeFrames(KEY);
         assertEquals("Hi.", c.transcript(KEY).get("utterances").get(0).get("text").asText());
         assertTrue(c.frameList(KEY).get("frames").isEmpty());
-        assertEquals(List.of("POST /media/" + KEY + "/transcribe ", "POST /media/" + KEY + "/frames ",
+        assertEquals(List.of("POST /media/" + KEY + "/transcribe ", "POST /media/" + KEY + "/frames/pick ",
+                "POST /media/" + KEY + "/frames/batches/3/ocr ", "POST /media/" + KEY + "/frames/merge ",
                 "GET /media/" + KEY + "/transcript ", "GET /media/" + KEY + "/frames "), seen);
+    }
+
+    @Test
+    void ocrGoesToTheWorkersOwnOcrAddressWhenOneIsConfigured() throws IOException {
+        List<String> atReplica = new ArrayList<>();
+        HttpServer replica = HttpServer.create(new InetSocketAddress(0), 0);
+        replica.createContext("/", ex -> {
+            atReplica.add(ex.getRequestMethod() + " " + ex.getRequestURI().getPath());
+            byte[] b = "{\"batch\":3,\"frames\":20,\"cached\":false}".getBytes(StandardCharsets.UTF_8);
+            ex.sendResponseHeaders(200, b.length);
+            ex.getResponseBody().write(b);
+            ex.close();
+        });
+        replica.start();
+        try {
+            MediaProperties props = new MediaProperties();
+            props.setBaseUrl("http://localhost:" + server.getAddress().getPort());
+            props.setOcrBaseUrl("http://localhost:" + replica.getAddress().getPort());
+            MediaClient c = new MediaClient(props);
+            assertEquals(20, c.ocrBatch(KEY, 3).get("frames").asInt());
+            c.pickFrames(KEY);                                    // 别的调用照旧打到媒体服务
+            assertEquals(List.of("POST /media/" + KEY + "/frames/batches/3/ocr"), atReplica);
+            assertEquals(List.of("POST /media/" + KEY + "/frames/pick "), seen);
+        } finally {
+            replica.stop(0);
+        }
     }
 
     @Test

@@ -66,3 +66,6 @@ rag:
 # 媒体服务(agentflow-media):课程录播的下载、转写、截帧识别。只有 LEC_* 子任务会用到
 media:
   base-url: http://localhost:8010
+  # 这个 worker 识别幻灯片用的地址(环境变量 MEDIA_OCRBASEURL)。不配就用上面的媒体服务。
+  # 配成本机的识别副本时,各批识别经 Kafka 分到各个 worker、各用各的副本:加机器 = 加一对"worker + 副本"。
+  ocr-base-url: ${MEDIA_OCRBASEURL:}

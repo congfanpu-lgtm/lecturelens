@@ -14,7 +14,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 讲次摄入第 4 步:逐字稿切成语音片段、幻灯片文字各成一个片段,写进检索服务。
+ * 讲次摄入的建索引这一步:先把各批识别出的幻灯片合并去重,再把逐字稿切成语音片段、幻灯片文字各成一个片段,写进检索服务。
  * 那边是整讲替换,所以这一步重复执行(重试、超时重投)不会留下两份片段。
  */
 @Component
@@ -41,6 +41,7 @@ public class LecIndexProcessor implements SubtaskProcessor {
         }
         int slides = 0;
         if (in.path("withSlides").asBoolean()) {
+            media.mergeFrames(mediaKey);   // 各批识别的结果按时间合并、去重(不到 1 秒,不值得单独一个子任务)
             List<Segment> slideSegments = Segmenter.slides(media.frameList(mediaKey).path("frames"),
                     in.path("durationMs").asLong());
             slides = slideSegments.size();

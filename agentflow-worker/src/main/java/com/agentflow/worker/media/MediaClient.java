@@ -15,7 +15,7 @@ import java.net.http.HttpResponse;
 import java.time.Duration;
 
 /**
- * 媒体服务的唯一入口(worker):下载、转写、截帧识别都在那边做,这里只发 HTTP 请求。
+ * 媒体服务的唯一入口(worker):下载、转写、挑帧、识别都在那边做,这里只发 HTTP 请求。
  * 那边按内容哈希缓存,同一讲同时来两个请求会排队、第二个拿到缓存,所以这些调用可以放心重试。
  * 和 {@code RagClient} 一样用 JDK HttpClient、固定 HTTP/1.1。
  */
@@ -47,8 +47,24 @@ public class MediaClient {
         return call("POST", "/media/" + mediaKey + "/transcribe", null);
     }
 
-    public JsonNode frames(String mediaKey) {
-        return call("POST", "/media/" + mediaKey + "/frames", null);
+    /** 截帧识别的第 1 步:挑出画面变了的帧。返回里的 batches 是接下来要识别几批。 */
+    public JsonNode pickFrames(String mediaKey) {
+        return call("POST", "/media/" + mediaKey + "/frames/pick", null);
+    }
+
+    /**
+     * 第 2 步:识别一批。打到这个 worker 自己的识别地址(media.ocr-base-url,不配就是媒体服务):
+     * 各批经 Kafka 分到各个 worker,每个 worker 用自己那台机器上的识别副本,加机器就是加一对"worker + 副本"。
+     */
+    public JsonNode ocrBatch(String mediaKey, int batch) {
+        String ocr = props.getOcrBaseUrl();
+        return call(ocr == null || ocr.isBlank() ? props.getBaseUrl() : ocr,
+                "POST", "/media/" + mediaKey + "/frames/batches/" + batch + "/ocr", null);
+    }
+
+    /** 第 3 步:各批的结果按时间合并、去重。有哪一批还没识别,那边会拒绝(400)。 */
+    public JsonNode mergeFrames(String mediaKey) {
+        return call("POST", "/media/" + mediaKey + "/frames/merge", null);
     }
 
     public JsonNode transcript(String mediaKey) {
@@ -60,8 +76,12 @@ public class MediaClient {
     }
 
     private JsonNode call(String method, String path, String body) {
+        return call(props.getBaseUrl(), method, path, body);
+    }
+
+    private JsonNode call(String baseUrl, String method, String path, String body) {
         HttpRequest.Builder req = HttpRequest.newBuilder()
-                .uri(URI.create(props.getBaseUrl() + path))
+                .uri(URI.create(baseUrl + path))
                 .timeout(Duration.ofMillis(props.getTimeoutMs()));
         if ("GET".equals(method)) {
             req.GET();

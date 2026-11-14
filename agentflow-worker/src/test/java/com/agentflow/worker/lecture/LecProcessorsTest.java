@@ -58,18 +58,30 @@ class LecProcessorsTest {
     }
 
     @Test
-    void transcribeAndFramesReportCounts() throws Exception {
+    void transcribeAndPickReportCounts() throws Exception {
         when(media.transcribe(KEY)).thenReturn(json("{\"mediaKey\":\"" + KEY + "\",\"utterances\":1298,\"cached\":false}"));
-        when(media.frames(KEY)).thenReturn(json("{\"mediaKey\":\"" + KEY + "\",\"frames\":120,\"cached\":true}"));
+        when(media.pickFrames(KEY)).thenReturn(json("{\"mediaKey\":\"" + KEY + "\",\"cached\":false,\"candidates\":263,\"batches\":14}"));
         String in = "{\"lectureId\":7,\"mediaKey\":\"" + KEY + "\"}";
         LecTranscribeProcessor t = new LecTranscribeProcessor(media);
         LecFramesProcessor f = new LecFramesProcessor(media);
         assertEquals("LEC_TRANSCRIBE", t.type());
         assertEquals("LEC_FRAMES", f.type());
         assertEquals(1298, json(t.process(in)).get("utterances").asInt());
-        JsonNode frames = json(f.process(in));
-        assertEquals(120, frames.get("frames").asInt());
-        assertTrue(frames.get("cached").asBoolean());
+        JsonNode picked = json(f.process(in));
+        assertEquals(263, picked.get("candidates").asInt());
+        assertEquals(14, picked.get("batches").asInt());       // server 据此建 14 个识别子任务
+        assertFalse(picked.get("cached").asBoolean());
+    }
+
+    @Test
+    void ocrReadsOneBatch() throws Exception {
+        when(media.ocrBatch(KEY, 3)).thenReturn(json("{\"mediaKey\":\"" + KEY + "\",\"batch\":3,\"frames\":20,\"cached\":false}"));
+        LecOcrProcessor p = new LecOcrProcessor(media);
+        assertEquals("LEC_OCR", p.type());
+        JsonNode out = json(p.process("{\"lectureId\":7,\"mediaKey\":\"" + KEY + "\",\"batch\":3}"));
+        assertEquals(3, out.get("batch").asInt());
+        assertEquals(20, out.get("frames").asInt());
+        assertFalse(out.get("cached").asBoolean());
     }
 
     private void transcript(String utterances) throws Exception {
@@ -92,6 +104,9 @@ class LecProcessorsTest {
         JsonNode out = json(p.process(indexInput(true)));
         assertEquals(1, out.get("speech").asInt());
         assertEquals(2, out.get("slides").asInt());
+        org.mockito.InOrder order = org.mockito.Mockito.inOrder(media);
+        order.verify(media).mergeFrames(KEY);       // 各批识别的结果先合并去重,再读幻灯片
+        order.verify(media).frameList(KEY);
         ArgumentCaptor<List<Segment>> segs = ArgumentCaptor.forClass(List.class);
         verify(rag).indexSegments(eq(3L), eq(7L), segs.capture());
         assertEquals(List.of(new Segment(0, 9000, "speech", "Welcome. Today: agents."),
@@ -105,6 +120,7 @@ class LecProcessorsTest {
         JsonNode out = json(new LecIndexProcessor(media, rag).process(indexInput(false)));
         assertEquals(0, out.get("slides").asInt());
         verify(media, never()).frameList(any());
+        verify(media, never()).mergeFrames(any());
     }
 
     @Test
