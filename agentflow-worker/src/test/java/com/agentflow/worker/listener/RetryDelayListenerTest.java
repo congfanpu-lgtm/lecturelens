@@ -42,6 +42,14 @@ class RetryDelayListenerTest {
     }
 
     @Test
+    void aRetriedTranscriptionGoesBackToItsOwnTopic() throws Exception {
+        listener.onRetry(new SubtaskMessage(1L, 11L, "u", "LEC_TRANSCRIBE", 1, "{}"), pastNotBefore(), null);
+        ArgumentCaptor<ProducerRecord<String, Object>> cap = ArgumentCaptor.forClass(ProducerRecord.class);
+        verify(template).send(cap.capture());
+        assertEquals(Topics.SUBTASK_SLOW, cap.getValue().topic(), "重试不能把转写放回大家共用的 topic");
+    }
+
+    @Test
     void defaultsAttemptToZeroWhenHeaderAbsent() throws Exception {
         byte[] notBeforeBytes = pastNotBefore();
 

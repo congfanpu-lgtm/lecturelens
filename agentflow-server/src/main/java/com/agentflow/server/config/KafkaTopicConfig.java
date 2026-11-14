@@ -38,6 +38,15 @@ public class KafkaTopicConfig {
         return TopicBuilder.name(Topics.SUBTASK).partitions(partitions).replicas(1).build();
     }
 
+    /**
+     * 转写专用(见 Topics.forSubtask):分区数 = 同时"在路上"的转写数上限。显卡上同一时刻只跑一路,
+     * 多出来的那几路只是在媒体服务里排队,所以不用多;其余的转写留在 Kafka 里等,不占 worker 的线程。
+     */
+    @Bean
+    public NewTopic slowSubtaskTopic(@Value("${agentflow.slow-subtask-partitions:4}") int partitions) {
+        return TopicBuilder.name(Topics.SUBTASK_SLOW).partitions(partitions).replicas(1).build();
+    }
+
     @Bean
     public NewTopic resultTopic() {
         return TopicBuilder.name(Topics.RESULT).partitions(3).replicas(1).build();

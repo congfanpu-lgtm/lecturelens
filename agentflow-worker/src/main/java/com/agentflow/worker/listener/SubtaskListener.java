@@ -48,6 +48,18 @@ public class SubtaskListener {
     @KafkaListener(topics = Topics.SUBTASK, concurrency = "${agentflow.worker.subtask-concurrency:4}")
     public void onMessage(SubtaskMessage msg,
                           @Header(name = Topics.RETRY_ATTEMPT_HEADER, required = false) byte[] attemptHeader) {
+        handle(msg, attemptHeader);
+    }
+
+    // 转写有自己的 topic 和自己的消费线程(舱壁隔离):它等显卡的那几分钟不占上面那组线程,
+    // 识别、建索引、提问照常流动。线程数 × worker 数不用超过这个 topic 的分区数(默认 4)。
+    @KafkaListener(topics = Topics.SUBTASK_SLOW, concurrency = "${agentflow.worker.slow-subtask-concurrency:2}")
+    public void onSlowMessage(SubtaskMessage msg,
+                              @Header(name = Topics.RETRY_ATTEMPT_HEADER, required = false) byte[] attemptHeader) {
+        handle(msg, attemptHeader);
+    }
+
+    private void handle(SubtaskMessage msg, byte[] attemptHeader) {
         int attempt = attemptHeader == null ? 0
                 : Integer.parseInt(new String(attemptHeader, StandardCharsets.UTF_8));
         traceEmitter.emit(String.valueOf(msg.getTaskId()), msg.getTaskId(), msg.getSubtaskId(),

@@ -83,7 +83,7 @@ public class TimeoutSweepService {
                 // 修 backlog T4b:type 取自任务而非硬编码 ECHO_BATCH,否则多任务类型下会把
                 // LLM_BATCH 子任务错标成 ECHO_BATCH,worker 路由到错处理器。
                 String type = SubtaskDispatcher.typeOf(taskMapper.selectById(s.getTaskId()).getType(), s);
-                kafkaTemplate.send(Topics.SUBTASK, String.valueOf(s.getId()),
+                kafkaTemplate.send(Topics.forSubtask(type), String.valueOf(s.getId()),
                         new SubtaskMessage(s.getTaskId(), s.getId(), s.getSubtaskUuid(),
                                 type, s.getSeq(), s.getInput()));
                 traceEmitter.emit(String.valueOf(s.getTaskId()), s.getTaskId(), s.getId(),

@@ -32,7 +32,7 @@ public class RetryDelayListener {
         long waitMs = notBefore - System.currentTimeMillis();
         if (waitMs > 0) Thread.sleep(waitMs);
         ProducerRecord<String, Object> rec = new ProducerRecord<>(
-                Topics.SUBTASK, String.valueOf(msg.getSubtaskId()), msg);
+                Topics.forSubtask(msg.getType()), String.valueOf(msg.getSubtaskId()), msg);
         rec.headers().add(new RecordHeader(Topics.RETRY_ATTEMPT_HEADER,
                 String.valueOf(attempt + 1).getBytes(StandardCharsets.UTF_8)));
         kafkaTemplate.send(rec);

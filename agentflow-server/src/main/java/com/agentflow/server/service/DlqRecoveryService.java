@@ -61,9 +61,9 @@ public class DlqRecoveryService {
                 .set("status", "RUNNING")
                 .set("result", null));
         // 3. 重投主 topic(attempt 归零,不带 header)
-        kafkaTemplate.send(Topics.SUBTASK, String.valueOf(s.getId()),
-                new SubtaskMessage(t.getId(), s.getId(), s.getSubtaskUuid(),
-                        SubtaskDispatcher.typeOf(t.getType(), s), s.getSeq(), s.getInput()));
+        String type = SubtaskDispatcher.typeOf(t.getType(), s);
+        kafkaTemplate.send(Topics.forSubtask(type), String.valueOf(s.getId()),
+                new SubtaskMessage(t.getId(), s.getId(), s.getSubtaskUuid(), type, s.getSeq(), s.getInput()));
         traceEmitter.emit(String.valueOf(t.getId()), t.getId(), s.getId(),
                 TraceStage.RECOVERED, "DISPATCHED", "manual replay");
         log.info("DLQ 恢复:子任务重置并重投 subtaskId={} taskId={}", subtaskId, t.getId());

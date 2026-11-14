@@ -18,7 +18,9 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Component;
 
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 分发器:task PENDING→RUNNING 后,把每个 PENDING 子任务同步发往 SUBTASK topic,
@@ -51,18 +53,22 @@ public class SubtaskDispatcher {
                         .eq("status", SubtaskStatus.PENDING.name()));
         // 显式分区:同一阶段的子任务 id 连续,按 id % 分区数各落一个分区 → 被不同消费线程并行处理。
         // 按 key 哈希时 3 个 agent 常撞进同一分区,max-poll-records=1 下只能排队串行。
-        List<PartitionInfo> parts = kafkaTemplate.partitionsFor(Topics.SUBTASK);
-        int partitions = parts == null ? 0 : parts.size();
+        Map<String, Integer> partitionsOf = new HashMap<>();   // 转写有自己的 topic(Topics.forSubtask),分区数各算各的
         for (SubtaskEntity sub : subs) {
+            String type = typeOf(task.getType(), sub);
+            String topic = Topics.forSubtask(type);
+            int partitions = partitionsOf.computeIfAbsent(topic, t -> {
+                List<PartitionInfo> parts = kafkaTemplate.partitionsFor(t);
+                return parts == null ? 0 : parts.size();
+            });
             SubtaskMessage msg = new SubtaskMessage(
-                    task.getId(), sub.getId(), sub.getSubtaskUuid(),
-                    typeOf(task.getType(), sub), sub.getSeq(), sub.getInput());
+                    task.getId(), sub.getId(), sub.getSubtaskUuid(), type, sub.getSeq(), sub.getInput());
             try {
                 // .get() 同步等待 broker ack:发送成功才迁移状态
                 String key = String.valueOf(sub.getId());
                 (partitions > 0
-                        ? kafkaTemplate.send(Topics.SUBTASK, (int) (sub.getId() % partitions), key, msg)
-                        : kafkaTemplate.send(Topics.SUBTASK, key, msg)).get();
+                        ? kafkaTemplate.send(topic, (int) (sub.getId() % partitions), key, msg)
+                        : kafkaTemplate.send(topic, key, msg)).get();
                 stateMachine.transitionSubtask(sub.getId(),
                         SubtaskStatus.PENDING, SubtaskStatus.DISPATCHED);
                 traceEmitter.emit(String.valueOf(task.getId()), task.getId(), sub.getId(),
