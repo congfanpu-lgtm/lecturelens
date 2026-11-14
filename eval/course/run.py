@@ -194,6 +194,7 @@ def main():
     p.add_argument("--rounds", type=int, default=3)
     p.add_argument("--questions", default=os.path.join(HERE, "questions.jsonl"))
     p.add_argument("--limit", type=int, help="只跑前 N 道题(试跑用)")
+    p.add_argument("--every", type=int, help="每隔 N 道题取一道(按题集里的顺序,贵的系统只跑一部分题时用)")
     p.add_argument("--concurrency", type=int, default=2)
     p.add_argument("--model")
     p.add_argument("--api", default="http://127.0.0.1:18090/api/v1")
@@ -226,6 +227,8 @@ def main():
     if problem and not args.unfrozen:
         print(problem, file=sys.stderr)
         return 1
+    if args.every:
+        questions = questions[::args.every]
     if args.limit:
         questions = questions[:args.limit]
     run_dir = os.path.join(HERE, "runs", args.name)

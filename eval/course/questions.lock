@@ -1,0 +1,9 @@
+{
+  "count": 89,
+  "byKind": {
+    "single": 60,
+    "cross": 22,
+    "absent": 7
+  },
+  "sha256": "9d322a6e0f482ccb8a58d36efef3cd7b3f289f714e33fcc0119d303c85e02d48"
+}
