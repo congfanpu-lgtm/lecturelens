@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- 结果不变:对同一段视频,分批识别再合并得到的 `frames.v3.json` 的 `frames`(时间、文字)必须和原来一帧接一帧的做法一样。文件版本号不变,已经处理好的 11 讲不重做。
+- 结果不变:对同一段视频,分批识别再合并得到的 `frames.v3.json` 的 `frames`(时间、文字)必须和原来一帧接一帧的做法一样。文件版本号不变,已经处理好的 11 讲不重做。(执行时发现:候选帧存成 JPEG 会让识别少认空格,所以存成无损的 PNG,见下面"执行中改掉的"。)
 - 逐字稿、图片、识别出的文字都不经过 Kafka 和 MySQL:子任务只带 `mediaKey`、批号和计数。
 - 失败的含义不变:挑帧或任何一批识别最终失败 → 这一讲只索引语音,状态是"部分完成";重试时只重做没做完的批。
 - 默认部署不变:不起识别副本、不配 `media.ocr-base-url` 时,一个媒体服务进程照样完成全部工作。
@@ -35,15 +35,15 @@
 
 | 接口 | 作用 | 返回 |
 |---|---|---|
-| `POST /media/K/frames/pick` | 挑帧:候选帧存进 `frames/`,清单写 `candidates.v1.json`。已有 `frames.v3.json` 时什么都不做 | `{"mediaKey","cached","candidates","batches"}` |
-| `GET /media/K/frames/batches/n` | 这一批有哪些文件(给识别副本) | `{"files":["000012345.jpg",…]}` |
-| `PUT /media/K/frames/batches/n` | 存这一批的识别结果(给识别副本),body `{"texts":{"000012345.jpg":"…"}}` | `{"stored":20}` |
+| `POST /media/K/frames/pick` | 挑帧:候选帧存进 `frames/`(PNG),清单写 `candidates.v1.json`。已有 `frames.v3.json` 时什么都不做 | `{"mediaKey","cached","candidates","batches"}` |
+| `GET /media/K/frames/batches/n` | 这一批有哪些文件、识别过没有(给识别副本) | `{"files":["000012345.png",…],"done":false}` |
+| `PUT /media/K/frames/batches/n` | 存这一批的识别结果(给识别副本),body `{"texts":{"000012345.png":"…"}}` | `{"stored":20}` |
 | `POST /media/K/frames/batches/n/ocr` | 识别这一批(本机有文件就读本机,识别副本经 HTTP 取图、写回) | `{"mediaKey","batch","frames","cached"}` |
 | `POST /media/K/frames/merge` | 按时间顺序合并各批、去重,写 `frames.v3.json`,删掉没留下的候选图 | `{"mediaKey","cached","frames"}` |
 | `POST /media/K/frames` | 原来的一步到位,现在 = 挑帧 + 逐批识别 + 合并 | 不变 |
 
-- 一批 20 张(`frames.OCR_BATCH`)。`candidates.v1.json`:`{"keyframes":n,"files":[…]}`;各批结果:`ocr/<n>.json`,`{"texts":{…}}`。重新挑帧时清掉 `ocr/`。
-- `frames.v3.json` 里每张幻灯片的 `file` 是留下的那张图(同一张幻灯片读了几次时是文字最全的那次),`tsMs` 是它第一次出现的时间,所以文件名里的数字不一定等于 `tsMs`。
+- 一批 20 张(`frames.OCR_BATCH`)。`candidates.v1.json`:`{"keyframes":n,"files":[…]}`;各批结果:`ocr.<n>.json`,`{"texts":{…}}`。合并之后清单、各批结果和候选图都删掉。
+- `frames.v3.json` 里每张幻灯片的 `file` 是留下的那张图(合并时从 PNG 转成 JPEG;同一张幻灯片读了几次时是文字最全的那次),`tsMs` 是它第一次出现的时间,所以文件名里的数字不一定等于 `tsMs`。
 - 识别副本:环境变量 `MEDIA_SOURCE=http://<媒体服务>`。副本上只有 `/health`、`/stats` 和 `…/ocr` 有意义。
 
 **子任务**
@@ -54,7 +54,12 @@
 | `LEC_OCR`(新) | `{"lectureId","mediaKey","batch"}` | `{"batch","frames","cached"}` |
 | `LEC_INDEX` | 不变;`withSlides` = 挑帧成功且每一批都成功 | 不变 |
 
-阶段:导入 → 转写 ∥ 挑帧 → 各批识别(并行)→ 建索引(先合并)→ 知识点目录。识别排在转写之后才开始:引擎是"一个阶段全部结束才进下一阶段";把识别和转写放进同一阶段的话,转写的消息会排在别的讲的识别批次后面,显卡空等(`docs/open-problems.md` P2)。
+阶段:导入 → 转写 ∥(挑帧 → 各批识别)→ 建索引(先合并)→ 知识点目录。
+
+**执行中改掉的**(原因和代价记在账本的 Ruling 里,实测在 `docs/benchmarks.md` 第 8、10 节):
+- 原计划"识别排在转写之后才开始"。实测 77 分钟的那一讲转写 196 秒、截帧识别 153 秒,原来识别是藏在转写的时间里的;等转写落定再识别,单讲会多出整个识别的时间。所以给引擎加了一个开关(`TaskDecomposer.advancesEarly()`):讲次摄入每落定一个子任务就问一次下一步,挑帧一完成就建各批识别。
+- 原计划候选帧存 JPEG。实测识别 JPEG 会少认 16% 的空格,改成无损的 PNG,合并时把留下的转成 JPEG。
+- 任务 1 的实测结论是"不改布局":这台机器上识别受内存带宽限制,一个引擎、每个槽位一个引擎、每个进程一个引擎,吞吐都在每秒 4.5 张上下。改掉的是线程空转。
 
 **worker 配置**:`media.ocr-base-url`(环境变量 `MEDIA_OCRBASEURL`),不配就用 `media.base-url`。
 
