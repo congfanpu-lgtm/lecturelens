@@ -4,9 +4,13 @@ Three steps, so that the OCR (the expensive part) can run in batches on any numb
 pick (decode, keep the frames whose picture changed) -> OCR in batches of OCR_BATCH -> merge (drop near-duplicate
 readings). frames_media runs all three in one call."""
 import difflib
+import io
+import json
 import shutil
 import tempfile
 import threading
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Iterator, Protocol
 
@@ -188,6 +192,44 @@ class Local:
             raise BadInput(f"texts do not match the files of batch {n}")
         self.store.write_json(key, _texts_file(n), {"texts": texts})
         return len(texts)
+
+
+def _http(method: str, url: str, body: bytes | None) -> tuple[int, bytes]:
+    req = urllib.request.Request(url, data=body, method=method,
+                                 headers={"Content-Type": "application/json"} if body else {})
+    try:
+        with urllib.request.urlopen(req, timeout=120) as r:
+            return r.status, r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.read()
+
+
+class Remote:
+    """The same three operations for an OCR replica: a process without the files, possibly on another machine.
+    Everything goes through the media service that holds them, over HTTP."""
+
+    def __init__(self, base_url: str, send=_http):
+        self.base, self.send = base_url.rstrip("/"), send
+
+    def _call(self, method: str, path: str, body: bytes | None = None) -> bytes:
+        status, data = self.send(method, f"{self.base}/media/{path}", body)
+        if status // 100 == 2:
+            return data
+        detail = data.decode("utf-8", "replace")[:300]
+        if status == 404:   # the same meaning as on the media service itself, so the caller's retry rules still hold
+            raise NotFound(detail)
+        if status // 100 == 4:
+            raise BadInput(detail)
+        raise RuntimeError(f"media service answered {status}: {detail}")
+
+    def batch(self, key: str, n: int) -> dict:
+        return json.loads(self._call("GET", f"{key}/frames/batches/{n}"))
+
+    def image(self, key: str, name: str) -> Image.Image:
+        return Image.open(io.BytesIO(self._call("GET", f"{key}/frames/{name}")))
+
+    def save(self, key: str, n: int, texts: dict[str, str]) -> int:
+        return json.loads(self._call("PUT", f"{key}/frames/batches/{n}", json.dumps({"texts": texts}).encode()))["stored"]
 
 
 def ocr_batch(source, key: str, n: int, ocr: Ocr, stats: Stats) -> dict:

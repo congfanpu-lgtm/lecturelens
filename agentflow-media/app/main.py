@@ -62,6 +62,11 @@ def get_ocr() -> Ocr:
     return _LazyOcr()
 
 
+def get_source(store: Store = Depends(get_store)):
+    """Where an OCR batch comes from: this process's own files, or (on an OCR replica) the media service."""
+    return slides.Remote(config.SOURCE) if config.SOURCE else slides.Local(store)
+
+
 # Only the two classes raised on purpose map to 4xx. A plain ValueError/KeyError from a library or a bug
 # falls through to the 500 handler (and its traceback is logged), so the caller knows it may retry.
 @app.exception_handler(BadInput)
@@ -156,9 +161,9 @@ def put_batch(key: str, n: int, body: BatchTexts, store: Store = Depends(get_sto
 
 
 @app.post("/media/{key}/frames/batches/{n}/ocr")
-def ocr_batch(key: str, n: int, store: Store = Depends(get_store), ocr: Ocr = Depends(get_ocr),
+def ocr_batch(key: str, n: int, source=Depends(get_source), ocr: Ocr = Depends(get_ocr),
               s: Stats = Depends(get_stats)):
-    return slides.ocr_batch(slides.Local(store), key, n, ocr, s)
+    return slides.ocr_batch(source, key, n, ocr, s)
 
 
 @app.post("/media/{key}/frames/merge")

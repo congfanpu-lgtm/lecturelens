@@ -17,3 +17,6 @@ OCR_THREADS = int(os.environ.get("MEDIA_OCR_THREADS", "8"))
 # MEDIA_OCR_THREADS=-1 leaves the library's default (one thread per core); the slot default then falls back to 1.
 OCR_SLOTS = int(os.environ.get("MEDIA_OCR_SLOTS", str(max(1, (os.cpu_count() or 4) // OCR_THREADS) if OCR_THREADS > 0 else 1)))
 ALLOWED_HOSTS = {"www.youtube.com", "youtube.com", "m.youtube.com", "youtu.be"}
+# Set on an OCR replica: the address of the media service that holds the files (for example http://172.17.0.1:8010).
+# A replica has no media of its own; it fetches the pictures of a batch from there and sends the text back.
+SOURCE = os.environ.get("MEDIA_SOURCE", "").rstrip("/")
