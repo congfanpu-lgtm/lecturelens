@@ -255,7 +255,9 @@ class CourseQaDecomposerTest {
         JsonNode plain = json(d.decompose(json("{\"courseId\":3,\"question\":\"what is rlhf\"}")).get(0).inputJson());
         assertFalse(plain.has("mode") || plain.has("judge") || plain.has("repair"), "不带选项时和以前一样");
         assertFalse(agentInput("{\"mode\":\"agent\"}").has("mode"));
-        for (String bad : new String[]{"{\"mode\":\"everything\"}", "{\"judge\":\"no\"}", "{\"repair\":0}", "\"rag\"", "{\"mode\":5}"}) {
+        // 键写错了(mod、jugde)不能悄悄按完整系统跑:评测里那一组数字就全错了
+        for (String bad : new String[]{"{\"mode\":\"everything\"}", "{\"judge\":\"no\"}", "{\"repair\":0}", "\"rag\"", "{\"mode\":5}",
+                "{\"mod\":\"rag\"}", "{\"mode\":\"rag\",\"jugde\":false}"}) {
             assertThrows(IllegalArgumentException.class, () -> agentInput(bad), bad);
         }
     }

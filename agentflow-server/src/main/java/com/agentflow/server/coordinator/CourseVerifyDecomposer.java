@@ -25,7 +25,7 @@ import java.util.Map;
 public class CourseVerifyDecomposer implements TaskDecomposer {
 
     public static final String TYPE = "COURSE_VERIFY";
-    private static final int MAX_CLAIMS = 50;
+    private static final int MAX_CLAIMS = 12;   // 和课程问答一次最多的结论数一样:判官一次输出的上限装不下更多
     private static final int MAX_EVIDENCE = 4;
     private static final int MAX_TEXT = 2000;
 
@@ -79,8 +79,14 @@ public class CourseVerifyDecomposer implements TaskDecomposer {
                         .put("quote", quote.length() > MAX_TEXT ? quote.substring(0, MAX_TEXT) : quote);
             }
         }
-        if (payload.path("eval").path("judge").isBoolean() && !payload.path("eval").path("judge").asBoolean()) {
-            in.put("judge", false);
+        JsonNode eval = payload.path("eval");
+        if (!eval.isMissingNode() && !eval.isNull()) {   // 这里只认 judge 一个选项,写错的拒绝
+            if (!eval.isObject() || eval.size() != 1 || !eval.path("judge").isBoolean()) {
+                throw new IllegalArgumentException("payload.eval 只能是 {\"judge\": true 或 false}");
+            }
+            if (!eval.get("judge").asBoolean()) {
+                in.put("judge", false);
+            }
         }
         if (payload.hasNonNull("model")) {
             in.put("model", payload.get("model").asText());

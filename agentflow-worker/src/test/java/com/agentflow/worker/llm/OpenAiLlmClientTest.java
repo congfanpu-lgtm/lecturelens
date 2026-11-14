@@ -92,6 +92,32 @@ class OpenAiLlmClientTest {
     }
 
     @Test
+    void theRequestTimeoutCanBeSet() {
+        // 把整门课的转写放进一次调用(十几万 token)时,模型一分钟内答不完:固定 60 秒会让这种调用每次都超时重试
+        server.createContext("/slow/chat/completions", ex -> {
+            ex.getRequestBody().readAllBytes();
+            try {
+                Thread.sleep(1500);
+            } catch (InterruptedException ignored) {
+                Thread.currentThread().interrupt();
+            }
+            byte[] resp = "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"ok\"}}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1}}"
+                    .getBytes(StandardCharsets.UTF_8);
+            ex.sendResponseHeaders(200, resp.length);
+            ex.getResponseBody().write(resp);
+            ex.close();
+        });
+        OpenAiLlmClient c = new OpenAiLlmClient();
+        ReflectionTestUtils.setField(c, "baseUrl", "http://127.0.0.1:" + server.getAddress().getPort() + "/slow");
+        ReflectionTestUtils.setField(c, "apiKey", "test-key");
+        ChatRequest req = new ChatRequest("m", java.util.List.of(new ChatMessage("user", "hi")), 10);
+        ReflectionTestUtils.setField(c, "timeoutSeconds", 1);
+        org.junit.jupiter.api.Assertions.assertThrows(Exception.class, () -> c.chat(req));
+        ReflectionTestUtils.setField(c, "timeoutSeconds", 30);
+        org.junit.jupiter.api.Assertions.assertEquals("ok", c.chat(req).getContent());
+    }
+
+    @Test
     void omitsToolsFieldWhenNoneGiven() throws Exception {
         client().chat(new ChatRequest("m", List.of(new ChatMessage("user", "hi")), 10));
         assertFalse(new ObjectMapper().readTree(sentBody.get()).has("tools"));

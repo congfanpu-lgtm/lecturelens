@@ -282,7 +282,8 @@ class CourseQaProcessorTest {
         JsonNode out = run(",\"mode\":\"rag\"", answer(GOOD));
         assertEquals(1, out.get("claims").size());
         assertEquals(750000, out.get("claims").get(0).get("evidence").get(0).get("startMs").asLong());
-        verify(rag, times(1)).searchSegments(eq(7L), eq(QUESTION), anyInt(), isNull(), isNull(), isNull());
+        // 取 8 个片段(agent 自己检索时一次是 5 个):这条基线只有一次检索的机会,不能再在片段数上吃亏
+        verify(rag, times(1)).searchSegments(eq(7L), eq(QUESTION), eq(8), isNull(), isNull(), isNull());
         ChatRequest sent = requests(1).get(0);                         // 只有一次模型调用,不给工具
         assertTrue(sent.getTools() == null || sent.getTools().isEmpty());
         assertEquals(List.of("system", "user", "user"), sent.getMessages().stream().map(ChatMessage::getRole).toList());

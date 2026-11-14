@@ -100,6 +100,16 @@ public class QuestionService {
         view.put("notFound", notFound);
         view.set("claims", claims);
         view.set("dropped", dropped);
+        // 每一轮核验各自的明细(落定之后才给):评测统计"被拿掉的占比""引文忠实率"时要把各轮加起来——
+        // 上面的 dropped 只是最后一轮的,补过一轮的话第一轮被拿掉的那些不在里面
+        ArrayNode verifications = view.putArray("verifications");
+        if (answered) {
+            for (JsonNode round : verified) {
+                ObjectNode item = verifications.addObject().put("kept", round.path("claims").size());
+                item.set("dropped", round.path("dropped").isArray() ? round.path("dropped") : objectMapper.createArrayNode());
+                item.set("evidence", round.path("evidence"));
+            }
+        }
 
         int rounds = 0;
         ArrayNode toolCalls = view.putArray("toolCalls");

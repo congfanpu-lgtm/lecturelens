@@ -163,7 +163,9 @@ public class CourseTools {
         if (fromMs != null && toMs != null && toMs < fromMs) {
             throw new IllegalArgumentException("to 不能早于 from");
         }
-        List<SegmentHit> hits = rag.searchSegments(courseId, query, TOP_K, lectureIds, fromMs, toMs);
+        // k 不在工具说明里:agent 一次看 5 个片段;评测里只检索一次的那条基线取 8 个(CourseQaProcessor)。最多 10 个
+        int k = args.path("k").isIntegralNumber() ? Math.max(1, Math.min(10, args.path("k").asInt())) : TOP_K;
+        List<SegmentHit> hits = rag.searchSegments(courseId, query, k, lectureIds, fromMs, toMs);
         StringBuilder sb = new StringBuilder();
         for (SegmentHit h : hits) {
             Lecture l = byId.get(h.lectureId());

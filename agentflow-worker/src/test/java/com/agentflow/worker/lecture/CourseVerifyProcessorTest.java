@@ -77,6 +77,29 @@ class CourseVerifyProcessorTest {
     }
 
     @Test
+    void countsEveryPieceOfEvidenceNotOnlyClaims() throws Exception {
+        // 一条结论带一句编的引文和一句真的:结论留下了,但"引文忠实率"要按条数算,那句编的不能不见了
+        judgeSays("{\"verdicts\":[{\"id\":\"c1\",\"supported\":true,\"reason\":\"ok\"}]}");
+        JsonNode out = run(claim("Mixed evidence.", evidence(103, 750000, 805000, "speech", FAKE), good()),
+                claim("Only fabricated.", evidence(103, 750000, 805000, "speech", FAKE)), claim("No evidence at all."));
+        assertEquals(3, out.get("evidence").get("proposed").asInt());
+        assertEquals(1, out.get("evidence").get("passed").asInt());
+        assertEquals(1, out.get("claims").size());
+    }
+
+    @Test
+    void theContextTheJudgeSawIsKeptWithTheEvidence() throws Exception {
+        // 校准判官时给人看的原文必须和判官看到的一样:存下来,不在别处按同样的规则再截一遍
+        judgeSays("{\"verdicts\":[{\"id\":\"c1\",\"supported\":true,\"reason\":\"ok\"},{\"id\":\"c2\",\"supported\":false,\"reason\":\"no\"}]}");
+        JsonNode out = run(claim("Kept.", good()), claim("Rejected.", good()));
+        String sent = sentToJudge();
+        String kept = out.get("claims").get(0).get("evidence").get(0).get("context").asText();
+        assertTrue(kept.contains(REAL) && kept.contains("Then you grade whether a response is good or not."), kept);
+        assertTrue(sent.contains(kept));
+        assertEquals(kept, out.get("dropped").get(0).get("evidence").get(0).get("context").asText());
+    }
+
+    @Test
     void withoutTheJudgeLayerThreeIsSkipped() throws Exception {
         // 评测里"去掉第 3 层"的那个系统:前两层照做,通过的结论直接保留,不调判官
         JsonNode out = runWith(",\"judge\":false", claim("Kept without a judge.", good()),

@@ -39,6 +39,7 @@ public class CourseQaDecomposer implements TaskDecomposer {
     static final int MAX_QUESTION_CHARS = 500;
     static final int MAX_HISTORY = 3;
     static final List<String> MODES = List.of("agent", "rag", "long");
+    static final List<String> EVAL_KEYS = List.of("mode", "judge", "repair");
     static final int MAX_HISTORY_ANSWER_CHARS = 2000;
 
     private final ObjectMapper objectMapper;
@@ -182,6 +183,12 @@ public class CourseQaDecomposer implements TaskDecomposer {
         }
         if (!eval.isObject()) {
             throw new IllegalArgumentException("payload.eval 要是一个对象");
+        }
+        for (var names = eval.fieldNames(); names.hasNext(); ) {   // 键写错了不能悄悄按默认的跑
+            String name = names.next();
+            if (!EVAL_KEYS.contains(name)) {
+                throw new IllegalArgumentException("payload.eval 里不认识的选项:" + name + ";可用的是 " + EVAL_KEYS);
+            }
         }
         String mode = "agent";
         if (eval.has("mode")) {

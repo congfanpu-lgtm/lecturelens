@@ -40,6 +40,7 @@ public class CourseQaProcessor implements SubtaskProcessor {
 
     static final int MAX_TOKENS = 4000;        // 跨讲次的回答带多条引文,研究 agent 的 1600 会把 JSON 截断
     static final int MAX_TOOL_CHARS = CourseTools.MAX_RESULT_CHARS;    // 工具自己按这个长度截(并说明后面还有),循环不会再截一次
+    static final int RAG_HITS = 8;             // 固定检索流水线只检索一次,多给几个片段(agent 自己检索时一次 5 个)
     static final int MAX_CLAIMS = 12;
     static final int MAX_EVIDENCE = 4;
     private static final int MAX_HISTORY_ANSWER = 500;
@@ -82,7 +83,7 @@ public class CourseQaProcessor implements SubtaskProcessor {
         if ("rag".equals(mode)) {       // 固定检索流水线:用问题检索一次
             AgentTool search = courseTools.stream().filter(t -> "search_segments".equals(t.name())).findFirst().orElseThrow();
             seed.add(new ChatMessage("user", "下面是用这个问题在这门课里检索到的片段:\n\n"
-                    + search.run(OM.createObjectNode().put("query", question))));
+                    + search.run(OM.createObjectNode().put("query", question).put("k", RAG_HITS))));
         } else if ("long".equals(mode)) {   // 长上下文基线:整门课的逐字稿
             seed.add(new ChatMessage("user", "下面是这门课全部讲次的逐字稿:\n\n" + tools.wholeCourse(lectures)));
         }

@@ -4,6 +4,8 @@
   python3 eval/course/run.py --name pilot --course 1 --systems S1,S2,S3 --rounds 3
       [--questions eval/course/questions.jsonl] [--limit N] [--concurrency 2] [--model 名字]
       [--api http://127.0.0.1:18090/api/v1] [--timeout 900] [--retry-failed]
+      [--real --price-in 0.10 --price-out 0.50]   真实模型的运行:不带 --real 的话报告里会标成"模拟模型";单价是美元 / 百万 token
+      [--unfrozen]                                 题集还没冻结也跑(只给示例题和试链路用)
   python3 eval/course/run.py --self-check
 
 被比较的系统都是同一个 COURSE_QA 任务,只是 payload 里的 eval 选项不同:
@@ -12,6 +14,7 @@
   S3  agent,但核验不调判官(只有前两层)                           eval.judge = false
   B1  整门课的转写放进一次模型调用(长上下文基线),核验只做前两层   eval.mode = long, eval.judge = false
 
+题集必须先冻结(questions.py freeze):运行开始时把题集抄进运行目录,之后打分只认这一份。
 结果逐行追加到 eval/course/runs/<name>/results.jsonl(一行是一题一系统一轮),中断后再跑同一条命令会接着跑:
 已经有结果的不重跑。失败和超时的也记一行(status 说明原因),默认不重跑;--retry-failed 时重跑,打分取最后一行。
 """
@@ -19,6 +22,7 @@ import argparse
 import datetime
 import json
 import os
+import shutil
 import sys
 import threading
 import time
@@ -80,9 +84,14 @@ def done_keys(path, retry_failed):
     if os.path.exists(path):
         for line in open(path, encoding="utf-8"):
             if line.strip():
-                r = json.loads(line)
+                try:
+                    r = json.loads(line)
+                except json.JSONDecodeError:
+                    continue      # 上次被杀时写到一半的一行:当它没有,这一题会重跑
                 if r["status"] == "COMPLETED" or not retry_failed:
                     done.add((r["qid"], r["system"], r["round"]))
+                elif retry_failed:
+                    done.discard((r["qid"], r["system"], r["round"]))
     return done
 
 
@@ -114,8 +123,24 @@ def run(run_dir, questions, sha, course, systems, rounds, concurrency=2, model=N
     return len(todo)
 
 
+def frozen_problem(path, sha):
+    """题集冻结了、而且冻结之后没改过 → None;否则返回一句说明。"""
+    lock = os.path.join(os.path.dirname(os.path.abspath(path)), "questions.lock")
+    if not os.path.exists(lock):
+        return "题集还没有冻结:先 python3 eval/course/questions.py freeze(示例题或试链路用 --unfrozen)。"
+    if json.load(open(lock))["sha256"] != sha:
+        return "题集在冻结之后被改过(和 questions.lock 对不上)。重新 freeze,而且之前的运行结果不能再用。"
+    return None
+
+
 def self_check():
     import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "questions.jsonl")
+        open(path, "w").write('{"id":"s1"}\n')
+        assert "还没有冻结" in frozen_problem(path, "abc")
+        json.dump({"sha256": "abc"}, open(os.path.join(d, "questions.lock"), "w"))
+        assert frozen_problem(path, "abc") is None and "被改过" in frozen_problem(path, "other")
     questions = [{"id": "s1", "kind": "single", "question": "what is rlhf"}, {"id": "a1", "kind": "absent", "question": "k8s?"}]
     assert payload(1, questions[0], "S1") == {"courseId": 1, "question": "what is rlhf"}
     assert payload(1, questions[0], "S2", "m")["eval"] == {"mode": "rag"} and payload(1, questions[0], "S2", "m")["model"] == "m"
@@ -143,6 +168,8 @@ def self_check():
         assert run(d, questions, "sha-1", 1, ["S1", "S2"], 3, asker=fake, log=quiet) == 4               # 多一轮:只跑新的
         assert run(d, questions, "sha-1", 1, ["S1", "S2"], 3, retry_failed=True, asker=fake, log=quiet) == 3
         assert all(b["question"] == "k8s?" and b["eval"] == {"mode": "rag"} for b in asked[-3:])
+        open(os.path.join(d, "results.jsonl"), "a").write('{"qid": "s1", "system": "S1", "rou')   # 被杀时写到一半的一行
+        assert run(d, questions, "sha-1", 1, ["S1"], 3, asker=fake, log=quiet) == 0                  # 接着跑时不会因为它崩掉
 
     # ask:提交被拒、超时、取答案时出错都变成这一题的状态
     assert ask(None, {}, 5, submit=lambda b: 1 / 0)[0].startswith("REJECTED: ZeroDivisionError")
@@ -172,6 +199,10 @@ def main():
     p.add_argument("--api", default="http://127.0.0.1:18090/api/v1")
     p.add_argument("--timeout", type=int, default=900)
     p.add_argument("--retry-failed", action="store_true")
+    p.add_argument("--real", action="store_true", help="这次是真实模型(否则报告里标成模拟模型)")
+    p.add_argument("--price-in", type=float, help="输入单价,美元 / 百万 token")
+    p.add_argument("--price-out", type=float, help="输出单价,美元 / 百万 token")
+    p.add_argument("--unfrozen", action="store_true", help="题集没冻结也跑(示例题、试链路)")
     p.add_argument("--self-check", action="store_true")
     args = p.parse_args()
     if args.self_check:
@@ -188,12 +219,17 @@ def main():
     if errors:
         print("\n".join(errors), file=sys.stderr)
         return 1
+    problem = frozen_problem(args.questions, sha)
+    if problem and not args.unfrozen:
+        print(problem, file=sys.stderr)
+        return 1
     if args.limit:
         questions = questions[:args.limit]
     run_dir = os.path.join(HERE, "runs", args.name)
     meta_path = os.path.join(run_dir, "meta.json")
-    meta = {"name": args.name, "course": args.course, "model": args.model, "questions": os.path.abspath(args.questions),
-            "questionsSha": sha, "systems": {s: SYSTEMS[s] for s in systems},
+    meta = {"name": args.name, "course": args.course, "model": args.model, "questions": "questions.jsonl",
+            "questionsSha": sha, "systems": {s: SYSTEMS[s] for s in systems}, "mock": not args.real,
+            "priceIn": args.price_in, "priceOut": args.price_out,
             "startedAt": datetime.datetime.now().astimezone().isoformat(timespec="seconds")}
     if os.path.exists(meta_path):
         old = json.load(open(meta_path))
@@ -203,6 +239,7 @@ def main():
         meta["startedAt"] = old["startedAt"]
         meta["systems"] = {**old["systems"], **meta["systems"]}
     os.makedirs(run_dir, exist_ok=True)
+    shutil.copyfile(args.questions, os.path.join(run_dir, "questions.jsonl"))   # 打分、校准只认运行目录里的这一份
     json.dump(meta, open(meta_path, "w"), ensure_ascii=False, indent=2)
     run(run_dir, questions, sha, args.course, systems, args.rounds, args.concurrency, args.model, args.api,
         args.timeout, args.retry_failed)

@@ -167,6 +167,13 @@ class CourseQaFlowTest {
         JsonNode a = questions.answer(uuid);
         assertEquals("COMPLETED", a.get("status").asText());
         assertEquals(2, a.get("claims").size(), "第一轮通过核验的 A 不能因为补了一轮就没了");
+        // 每一轮核验各自的明细都在:评测算"被拿掉的占比"时,第一轮被拿掉的那两条不能因为补了一轮就不算了
+        assertEquals(2, a.get("verifications").size());
+        assertEquals(1, a.get("verifications").get(0).get("kept").asInt());
+        assertEquals(2, a.get("verifications").get(0).get("dropped").size());
+        assertEquals(3, a.get("verifications").get(0).get("dropped").get(1).get("layer").asInt());
+        assertEquals(1, a.get("verifications").get(1).get("kept").asInt());
+        assertEquals(0, a.get("verifications").get(1).get("dropped").size());
         assertEquals("Claim A.", a.get("claims").get(0).get("text").asText());
         assertEquals("Claim D.", a.get("claims").get(1).get("text").asText());
         assertEquals(0, a.get("dropped").size());

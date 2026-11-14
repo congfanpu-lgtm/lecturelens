@@ -23,6 +23,7 @@ import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 KINDS = ("single", "cross", "absent")
+MAX_GOLD_MS = 6 * 60_000   # 一段标准区间最长这么长
 
 
 def clock_ms(s):
@@ -31,6 +32,8 @@ def clock_ms(s):
     if len(parts) not in (2, 3) or not all(p.isdigit() for p in parts):
         raise ValueError(f"时间要写成 分:秒,收到的是 {s!r}")
     nums = [int(p) for p in parts]
+    if nums[-1] >= 60 or (len(nums) == 3 and nums[1] >= 60):
+        raise ValueError(f"时间要写成 分:秒(秒不到 60),收到的是 {s!r}")
     secs = nums[0] * 60 + nums[1] if len(nums) == 2 else nums[0] * 3600 + nums[1] * 60 + nums[2]
     return secs * 1000
 
@@ -58,11 +61,12 @@ def validate(questions, lectures=None):
             errors.append(f"{who}:不是一个对象")
             continue
         qid = q.get("id")
-        if not isinstance(qid, str) or not qid.strip():
-            errors.append(f"{who}:缺 id")
+        if not isinstance(qid, str) or not qid.strip() or qid != qid.strip():
+            errors.append(f"{who}:id 要是一段前后没有空格的文字")
         elif qid in seen:
             errors.append(f"{who}:id 重复")
-        seen.add(qid)
+        else:
+            seen.add(qid)
         if not isinstance(q.get("question"), str) or not q["question"].strip():
             errors.append(f"{who}:缺 question")
         kind = q.get("kind")
@@ -97,6 +101,9 @@ def validate(questions, lectures=None):
                 continue
             if start >= end:
                 errors.append(f"{who}:第 {g['lecture']} 讲的区间 from 不早于 to")
+            elif end - start > MAX_GOLD_MS:
+                # 区间太长的话,那一讲里随便哪段证据都算"命中",证据定位这一项就没有意义了
+                errors.append(f"{who}:第 {g['lecture']} 讲的区间超过 {MAX_GOLD_MS // 60000} 分钟,拆成几段或者写准一点")
             if lectures is not None:
                 if g["lecture"] not in lectures:
                     errors.append(f"{who}:这门课没有第 {g['lecture']} 讲")
@@ -122,7 +129,7 @@ def course_lectures(api, course_id):
 
 def self_check():
     assert clock_ms("12:30") == 750000 and clock_ms("1:02:30") == 3750000 and clock_ms("90:00") == 5400000
-    for bad in ("12", "ab:cd", "1:2:3:4", "", None, "-1:00"):
+    for bad in ("12", "ab:cd", "1:2:3:4", "", None, "-1:00", "12:75", "1:61:00"):
         try:
             clock_ms(bad)
             raise AssertionError(f"{bad!r} 应该被拒绝")
@@ -152,6 +159,9 @@ def self_check():
     assert "至少要落在两讲里" in errs(lambda q: q["gold"].pop(), base=1)
     assert "只能在一讲里" in errs(lambda q: q["gold"].append({"lecture": 5, "from": "1:00", "to": "2:00"}))
     assert "id 重复" in errs(lambda q: q.update(id="x1"))
+    assert "前后没有空格" in errs(lambda q: q.update(id=" s1")) and "前后没有空格" in errs(lambda q: q.update(id=["s1"]))
+    assert "超过 6 分钟" in errs(lambda q: q["gold"][0].update({"from": "10:00", "to": "16:01"}))
+    assert "超过" not in errs(lambda q: q["gold"][0].update({"from": "10:00", "to": "16:00"}))
     assert "lecture(讲次序号,整数)" in errs(lambda q: q["gold"][0].update(lecture="3"))
     assert validate(["not an object"]) == ["第 1 题:不是一个对象"]
 
@@ -167,6 +177,8 @@ def self_check():
         open(path, "a", encoding="utf-8").write("\n")                           # 冻结之后改了一个字
         assert load(path)[1] != frozen["sha256"]
         assert main(["check", "--file", path, "--lock", lock]) == 1
+        open(path, "w", encoding="utf-8").write("")
+        assert main(["freeze", "--file", path, "--lock", lock]) == 1 and json.load(open(lock)) == frozen   # 空的题集不能冻结
         open(path, "w", encoding="utf-8").write('{"id":"s1"}\nnot json\n')
         assert main(["check", "--file", path, "--lock", lock]) == 1            # 第 2 行不是 JSON
         assert main(["freeze", "--file", path, "--lock", lock]) == 1 and json.load(open(lock)) == frozen
@@ -196,6 +208,8 @@ def main(argv=None):
     errors = validate(questions, course_lectures(args.api, args.course) if args.course else None)
     for e in errors:
         print(e, file=sys.stderr)
+    if not questions:
+        errors.append("题集是空的")
     info = summary(questions, sha)
     print(f"{info['count']} 题:单讲 {info['byKind']['single']}、跨讲次 {info['byKind']['cross']}、课里没讲 {info['byKind']['absent']}")
     if errors:

@@ -88,7 +88,9 @@ class CourseToolsTest {
         String out = call("search_segments", "{\"query\":\"rlhf\"}");
         assertTrue(out.contains("[L3 12:30-13:25 speech]\nRL from human feedback aligns the model."), out);
         assertTrue(out.contains("\n\n[L1 78:18-78:40 slide]\nRLHF: maximize human preference"), out);
-        verify(rag).searchSegments(eq(7L), eq("rlhf"), anyInt(), isNull(), isNull(), isNull());
+        verify(rag).searchSegments(eq(7L), eq("rlhf"), eq(5), isNull(), isNull(), isNull());
+        call("search_segments", "{\"query\":\"rlhf\",\"k\":500}");                 // 模型自己要更多:最多 10 个
+        verify(rag).searchSegments(eq(7L), eq("rlhf"), eq(10), isNull(), isNull(), isNull());
     }
 
     @Test

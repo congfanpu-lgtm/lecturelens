@@ -89,6 +89,9 @@ class CourseVerifyDecomposerTest {
                 "{\"courseId\":3,\"question\":\"q\",\"claims\":[{\"text\":\"\",\"evidence\":[]}]}",  // 结论是空的
                 "{\"courseId\":3,\"question\":\"q\",\"claims\":[" + CLAIM.replace("\"lecture\":3", "\"lecture\":4") + "]}",   // 这一讲没处理好
                 "{\"courseId\":3,\"question\":\"q\",\"claims\":[" + CLAIM.replace("\"lecture\":3", "\"lecture\":\"3\"") + "]}",
+                "{\"courseId\":3,\"question\":\"q\",\"claims\":[" + CLAIM + "],\"eval\":{\"judge\":\"no\"}}",     // 选项写错了
+                "{\"courseId\":3,\"question\":\"q\",\"claims\":[" + CLAIM + "],\"eval\":{\"mode\":\"rag\"}}",
+                "{\"courseId\":3,\"question\":\"q\",\"claims\":[" + (CLAIM + ",").repeat(12) + CLAIM + "]}",         // 13 条:判官一次答不完
         };
         for (String payload : bad) {
             assertThrows(IllegalArgumentException.class, () -> decompose(payload), payload);

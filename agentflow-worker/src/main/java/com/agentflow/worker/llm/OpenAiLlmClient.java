@@ -51,6 +51,10 @@ public class OpenAiLlmClient implements LlmClient {
     @Value("${llm.openai.max-tokens-param:${OPENAI_MAX_TOKENS_PARAM:max_tokens}}")
     private String maxTokensParam = "max_tokens";
 
+    /** 一次调用最多等多久。默认 60 秒;十几万 token 的输入(评测里的长上下文基线)或者几千 token 的输出要调大。 */
+    @Value("${llm.openai.timeout-seconds:${OPENAI_TIMEOUT_SECONDS:60}}")
+    private int timeoutSeconds = 60;
+
     /** 服务商响应体只进日志,且先截断、给 key 形状的串打码(401 的报错常回显半截 key)。 */
     static String redact(String s) {
         String t = s == null ? "" : KEY_LIKE.matcher(s).replaceAll("$1-***");
@@ -102,7 +106,7 @@ public class OpenAiLlmClient implements LlmClient {
                     .uri(URI.create(baseUrl + "/chat/completions"))
                     .header("Content-Type", "application/json")
                     .header("Authorization", "Bearer " + apiKey)
-                    .timeout(Duration.ofSeconds(60))
+                    .timeout(Duration.ofSeconds(timeoutSeconds))
                     .POST(HttpRequest.BodyPublishers.ofString(OM.writeValueAsString(body)))
                     .build();
             HttpResponse<String> resp = http.send(httpReq, HttpResponse.BodyHandlers.ofString());

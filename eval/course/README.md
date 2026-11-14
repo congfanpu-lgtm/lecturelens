@@ -12,9 +12,9 @@
 |---|---|
 | `id` | 自己起,不重复。建议单讲题 `s01`、跨讲次题 `x01`、课里没讲的题 `a01` |
 | `kind` | `single` 单讲 / `cross` 跨讲次(答案至少落在两讲里)/ `absent` 课里没讲 |
-| `question` | 复习时真会问的问法。不要照着转写的原句写,否则关键词检索白占便宜 |
+| `question` | 复习时真会问的问法。不要照着转写的原句写,否则关键词检索白占便宜。**用课程的语言写**(评测课是英文课,题目用英文):向量模型是英文的,用中文问会让"只检索一次"的那条基线吃亏 |
 | `points` | 要点式的标准答案,每条一句自己的话。打分时逐条判"答案里有没有说到" |
-| `gold` | 答案所在的位置:讲次序号 + 时间段(`分:秒`,分钟可以超过 59),可以多个 |
+| `gold` | 答案所在的位置:讲次序号 + 时间段(`分:秒`,分钟可以超过 59),可以多个;一段最长 6 分钟 |
 | `author` | `user`(自己写的)或 `model-drafted`(模型起草、自己改写核对过的) |
 
 写法上的几条:
@@ -42,15 +42,24 @@
 | S3 | agent,核验不调判官 | `{"judge":false}` |
 | B1 | 长上下文基线:整门课的逐字稿放进一次调用,核验只做前两层 | `{"mode":"long","judge":false}` |
 
-    python3 eval/course/run.py --name pilot --course 1 --systems S1,S2,S3 --rounds 3     # 中断后再跑同一条命令会接着跑
-    python3 eval/course/score.py eval/course/runs/pilot                                   # 不调模型的指标 + 置信区间
-    python3 eval/course/grade.py eval/course/runs/pilot --model <打分模型>                # 答对率;之后再 score 一次
+    python3 eval/course/run.py --name pilot --course 1 --systems S1,S2,S3 --rounds 3 \
+        --real --price-in 0.10 --price-out 0.50                                           # 中断后再跑同一条命令会接着跑
+    python3 eval/course/calibrate.py audit eval/course/runs/pilot --course 1              # 没有判官的系统:事后让判官看它的答案
+    python3 eval/course/grade.py eval/course/runs/pilot --model <打分模型>                # 答对率
+    python3 eval/course/score.py eval/course/runs/pilot                                   # 出报告:summary.md
+
+- 题集必须先冻结;`run.py` 开始时把题集抄进运行目录,打分、校准只认那一份。示例题或试链路用 `--unfrozen`。
+- 不带 `--real` 的运行在报告里标成"模拟模型";单价(美元 / 百万 token)不给的话报告里没有成本一栏。
+- 没跑成的运行在"命中"类指标上按 0 算。报告开头会提醒还有几次没跑成、几次没打分;先 `--retry-failed` 再看数字。
 
 判官(核验第 3 层)自己的准确率,要有人的标注来量:
 
     python3 eval/course/calibrate.py export eval/course/runs/pilot --n 100    # 写 pairs.csv:在 label 一列填 y 或 n
     python3 eval/course/calibrate.py score eval/course/runs/pilot             # 标完之后:准确率、漏拦率、误拦率
     python3 eval/course/calibrate.py swap eval/course/runs/pilot --course 1   # 不费人工:换成随机证据,判官应该全部拒绝
+
+抽样时判官否掉的结论占一半,而实际运行里它们只是少数。所以 `score` 给两组数:`sample` 是这份样本上的一致率,
+`weighted` 才是按实际比例加权之后判官的准确率、漏拦率和误拦率,写报告用后一组。
 
 - `run.py` 和课程环境在同一台机器上跑(默认连 `127.0.0.1:18090`);`grade.py` 只需要运行目录和 `.env` 里的模型地址、key,
   可以在别的机器上跑。

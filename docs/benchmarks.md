@@ -664,9 +664,11 @@ twelve runs, all completed; scoring and the report (`eval/course/score.py`) ran 
 | S3 | 2 (agent 2, no judge) | 1 | about 1,400 tokens in total |
 | B1 | 1 (no judge) | 0 | about 168,000 tokens: the 11 lectures are about 673,000 characters of transcript |
 
-The last row is the one real number here: the long-context baseline reads about a hundred times more per
-question than the others. It fits the limit set for that baseline (800,000 characters); a longer course fails
-that run with a clear error rather than being cut short.
+The last row is the one real number here: the 11 lectures are about 673,000 characters, about 168,000 tokens,
+and the long-context baseline sends all of it with every question. How much the other systems read per question
+is not known yet: the mock model answers after one search, a real one will read more (the design estimates
+about 30,000 tokens). The course fits the limit set for that baseline (800,000 characters); a longer course
+fails that run with a clear error rather than being cut short.
 
 **The whole course added again** (11 lectures, 12.7 hours, into a second course): all searchable after 57 s; the
 media service counted 0 downloads, 0 transcriptions and 0 slide merges. Killing a worker during ingestion is in

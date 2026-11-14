@@ -77,6 +77,8 @@ public class CourseVerifyProcessor implements SubtaskProcessor {
 
         ArrayNode dropped = OM.createArrayNode();
         List<Candidate> candidates = new ArrayList<>();
+        int evidenceProposed = 0;   // 按条数记:一条结论带一句编的和一句真的,结论会留下,但那句编的要算进"引文忠实率"
+        int evidencePassed = 0;
         for (JsonNode claim : in.path("claims")) {
             String text = claim.path("text").asText("");
             if (claim.path("evidence").isEmpty()) {
@@ -100,7 +102,9 @@ public class CourseVerifyProcessor implements SubtaskProcessor {
                             transcripts.computeIfAbsent(lecture.mediaKey(), k -> media.transcript(k).path("utterances")),
                             frames.computeIfAbsent(lecture.mediaKey(), this::framesOf));
                 }
+                evidenceProposed++;
                 if (v.ok()) {
+                    evidencePassed++;
                     passed.add(e);
                 } else if (firstFailure == null) {
                     firstFailure = v;
@@ -133,9 +137,12 @@ public class CourseVerifyProcessor implements SubtaskProcessor {
                     String context = EvidenceChecker.windowText(e.path("source").asText(),
                             e.path("startMs").asLong() - MARGIN_MS, e.path("endMs").asLong() + MARGIN_MS,
                             transcripts.get(lecture.mediaKey()), frames.get(lecture.mediaKey()));
+                    String shown = around(context, e.path("quote").asText(), MAX_CONTEXT_CHARS);
+                    // 判官看到的那段原文跟着证据一起存下来:校准判官时给人看的必须是同一段,不能在别处按"同样的规则"再截一遍
+                    ((ObjectNode) e).put("context", shown);
                     evidence.addObject()
                             .put("where", "L" + lecture.seq() + " " + clock(e.path("startMs").asLong()) + "-" + clock(e.path("endMs").asLong()))
-                            .put("context", around(context, e.path("quote").asText(), MAX_CONTEXT_CHARS))
+                            .put("context", shown)
                             .put("quote", e.path("quote").asText());
                 }
             }
@@ -182,6 +189,7 @@ public class CourseVerifyProcessor implements SubtaskProcessor {
         ObjectNode out = OM.createObjectNode();
         out.set("claims", verified);
         out.set("dropped", dropped);
+        out.set("evidence", OM.createObjectNode().put("proposed", evidenceProposed).put("passed", evidencePassed));
         out.set("usage", OM.valueToTree(usage));
         return out.toString();
     }

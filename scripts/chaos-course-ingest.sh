@@ -76,9 +76,11 @@ import json, sys
 before, after, n = json.loads(sys.argv[1]), json.loads(sys.argv[2]), int(sys.argv[3])
 d = {k: after[k] - before[k] for k in before}
 print("  媒体服务这段时间:下载 %d 次,转写 %d 次,幻灯片合并 %d 次(摄入了 %d 讲)" % (d["downloads"], d["asrRuns"], d["ocrRuns"], n))
-ok = d["downloads"] == 0 and d["asrRuns"] <= n and d["ocrRuns"] <= n
+# 正好各一次:多了是做完的步骤被重做了;少了是这几讲的转写或幻灯片结果没有先挪开(演练什么都没验证),
+# 或者媒体服务中途重启过(计数清零)
+ok = d["downloads"] == 0 and d["asrRuns"] == n and d["ocrRuns"] == n
 if not ok:
-    print("  ❌ 有步骤被重做了")
+    print("  ❌ 每一讲应该正好转写一次、合并一次、不下载")
 sys.exit(0 if ok else 1)
 PY
 [ "$FAIL" -eq 0 ] || { echo "❌ CHAOS FAIL"; exit 1; }
