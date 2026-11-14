@@ -168,10 +168,11 @@ public class CourseVerifyProcessor implements SubtaskProcessor {
             for (int i = 0; i < candidates.size(); i++) {
                 Candidate c = candidates.get(i);
                 JsonNode v = byClaim.get(i);
+                // 判官否掉(或漏判)的结论带着它看过的证据:评测里校准判官时,要拿"结论 + 证据"这一对给人标注
                 if (v == null) {
-                    drop(dropped, c.text(), 3, "判官没有给出判定");   // 漏判的不算通过
+                    drop(dropped, c.text(), 3, "判官没有给出判定").set("evidence", c.evidence());   // 漏判的不算通过
                 } else if (!v.path("supported").asBoolean(false)) {
-                    drop(dropped, c.text(), 3, v.path("reason").asText("判官认为原文不支持这条结论"));
+                    drop(dropped, c.text(), 3, v.path("reason").asText("判官认为原文不支持这条结论")).set("evidence", c.evidence());
                 } else {
                     verified.addObject().put("text", c.text()).set("evidence", c.evidence());
                 }
@@ -208,7 +209,7 @@ public class CourseVerifyProcessor implements SubtaskProcessor {
         }
     }
 
-    private static void drop(ArrayNode dropped, String text, int layer, String reason) {
-        dropped.addObject().put("text", text).put("layer", layer).put("reason", reason);
+    private static ObjectNode drop(ArrayNode dropped, String text, int layer, String reason) {
+        return dropped.addObject().put("text", text).put("layer", layer).put("reason", reason);
     }
 }

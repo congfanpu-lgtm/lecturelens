@@ -42,6 +42,12 @@
     python3 eval/course/score.py eval/course/runs/pilot                                   # 不调模型的指标 + 置信区间
     python3 eval/course/grade.py eval/course/runs/pilot --model <打分模型>                # 答对率;之后再 score 一次
 
+判官(核验第 3 层)自己的准确率,要有人的标注来量:
+
+    python3 eval/course/calibrate.py export eval/course/runs/pilot --n 100    # 写 pairs.csv:在 label 一列填 y 或 n
+    python3 eval/course/calibrate.py score eval/course/runs/pilot             # 标完之后:准确率、漏拦率、误拦率
+    python3 eval/course/calibrate.py swap eval/course/runs/pilot --course 1   # 不费人工:换成随机证据,判官应该全部拒绝
+
 - `run.py` 和课程环境在同一台机器上跑(默认连 `127.0.0.1:18090`);`grade.py` 只需要运行目录和 `.env` 里的模型地址、key,
   可以在别的机器上跑。
 - `runs/` 不进仓库(`.gitignore`)。真实运行的汇总(`summary.md`)到时候抄进 `eval/results/` 和 `docs/benchmarks.md`。

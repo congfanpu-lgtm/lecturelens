@@ -156,6 +156,8 @@ class CourseVerifyProcessorTest {
         JsonNode d = out.get("dropped").get(0);
         assertEquals(3, d.get("layer").asInt());
         assertEquals("原文只说收集偏好,没有说永远准确", d.get("reason").asText());
+        // 判官否掉的结论带着它看过的证据:校准判官时要拿这一对给人标注
+        assertEquals(REAL, d.get("evidence").get(0).get("quote").asText());
     }
 
     @Test

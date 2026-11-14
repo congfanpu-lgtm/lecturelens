@@ -64,20 +64,7 @@ public class CourseQaDecomposer implements TaskDecomposer {
             throw new IllegalArgumentException("课程不存在: courseId=" + courseId);
         }
         ObjectNode in = objectMapper.createObjectNode().put("courseId", courseId).put("question", question);
-        ArrayNode lectures = in.putArray("lectures");
-        for (LectureEntity l : lectureMapper.selectList(
-                new QueryWrapper<LectureEntity>().eq("course_id", courseId).orderByAsc("seq"))) {
-            // 处理中和失败的讲次没有(完整的)索引,不能拿来回答问题
-            if (("READY".equals(l.getStatus()) || "PARTIAL".equals(l.getStatus())) && l.getMediaKey() != null) {
-                ObjectNode item = lectures.addObject()
-                        .put("lectureId", l.getId())
-                        .put("seq", l.getSeq())
-                        .put("title", l.getTitle() == null ? "" : l.getTitle())
-                        .put("durationMs", l.getDurationMs() == null ? 0 : l.getDurationMs())
-                        .put("mediaKey", l.getMediaKey());
-                item.set("concepts", json(l.getConcepts() == null ? "[]" : l.getConcepts()));
-            }
-        }
+        ArrayNode lectures = in.putArray("lectures").addAll(lectures(courseId));
         if (lectures.isEmpty()) {
             throw new IllegalArgumentException("这门课还没有处理好的讲次");
         }
@@ -100,6 +87,25 @@ public class CourseQaDecomposer implements TaskDecomposer {
         }
         evalOptions(payload.path("eval"), in);
         return List.of(new SubtaskDef(0, in.toString(), AGENT));
+    }
+
+    /** 这门课里已经处理好的讲次(READY / PARTIAL),按序号排。COURSE_VERIFY 也用它:讲次信息只从库里取。 */
+    ArrayNode lectures(long courseId) {
+        ArrayNode lectures = objectMapper.createArrayNode();
+        for (LectureEntity l : lectureMapper.selectList(
+                new QueryWrapper<LectureEntity>().eq("course_id", courseId).orderByAsc("seq"))) {
+            // 处理中和失败的讲次没有(完整的)索引,不能拿来回答问题
+            if (("READY".equals(l.getStatus()) || "PARTIAL".equals(l.getStatus())) && l.getMediaKey() != null) {
+                ObjectNode item = lectures.addObject()
+                        .put("lectureId", l.getId())
+                        .put("seq", l.getSeq())
+                        .put("title", l.getTitle() == null ? "" : l.getTitle())
+                        .put("durationMs", l.getDurationMs() == null ? 0 : l.getDurationMs())
+                        .put("mediaKey", l.getMediaKey());
+                item.set("concepts", json(l.getConcepts() == null ? "[]" : l.getConcepts()));
+            }
+        }
+        return lectures;
     }
 
     @Override
