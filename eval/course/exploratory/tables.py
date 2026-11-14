@@ -49,3 +49,39 @@ if os.path.exists(rawp):
     for a, b in (('B1', 'S1'), ('B1', 'S3'), ('B1', 'S2')):
         d = score.bootstrap_diff(R[a], R[b]); print(f'  raw {a} - {b}: {100*d[0]:+.1f} [{100*d[1]:+.1f}, {100*d[2]:+.1f}] n={d[3]}')
         d = score.bootstrap_diff(V[a], V[b]); print(f'  verified {a} - {b}: {100*d[0]:+.1f} [{100*d[1]:+.1f}, {100*d[2]:+.1f}] n={d[3]}')
+
+print('\n== the same judge asked again: share of an answer\'s claims it rejects, paired by question ==')
+fb = {}
+for (qid, s, rnd), (u, n, rej) in audit.items():
+    if n: fb.setdefault(s, {}).setdefault(qid, []).append(rej / n)
+FB = {s: {q: statistics.mean(v) for q, v in d.items()} for s, d in fb.items()}
+pooled = {}
+for (qid, s, rnd), (u, n, rej) in audit.items():
+    p = pooled.setdefault(s, [0, 0]); p[0] += rej; p[1] += n
+for s in sorted(FB):
+    m = score.bootstrap(list(FB[s].values()))
+    print(s, f'{100*m[0]:.1f}% [{100*m[1]:.1f}, {100*m[2]:.1f}] n={m[3]}  pooled {pooled[s][0]}/{pooled[s][1]} = {100*pooled[s][0]/pooled[s][1]:.1f}%')
+if 'S1' in FB and 'S3' in FB:
+    d = score.bootstrap_diff(FB['S3'], FB['S1']); print(f'  S3 - S1: {100*d[0]:+.1f} [{100*d[1]:+.1f}, {100*d[2]:+.1f}] n={d[3]}')
+
+if os.path.exists(rawp):
+    print('\n== raw minus verified, paired by question ==')
+    for s in sorted(R):
+        d = score.bootstrap_diff(R[s], V[s]); print(f'  {s}: {100*d[0]:+.1f} [{100*d[1]:+.1f}, {100*d[2]:+.1f}] n={d[3]}')
+
+print('\n== B1 - S1 correctness against each S1 round separately (B1 has one round) ==')
+by_round = {}
+for (qid, s, rnd), (u, sc) in grades.items():
+    if qid in b1: by_round.setdefault((s, rnd), {})[qid] = sc
+for rnd in (1, 2, 3):
+    d = score.bootstrap_diff(by_round[('B1', 1)], by_round[('S1', rnd)])
+    print(f'  S1 round {rnd}: {100*d[0]:+.1f} [{100*d[1]:+.1f}, {100*d[2]:+.1f}] n={d[3]}')
+
+print('\n== B1 evidence location: answers with at least one verified claim ==')
+hit = tot = none = 0
+for r in rows:
+    if r['system'] != 'B1' or questions[r['qid']]['kind'] == 'absent': continue
+    sc = score.score_row(questions[r['qid']], r, False)
+    if not (r['answer'].get('claims') or []): none += 1; continue
+    tot += 1; hit += 1 if sc.get('located') else 0
+print(f'  no verified claim: {none}; with claims: {hit} of {tot} hit a gold range')

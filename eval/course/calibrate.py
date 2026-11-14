@@ -235,7 +235,8 @@ def swap(rows, course, n, seed, api, judged_systems, questions, model=None, veri
 
 
 def audit(run_dir, rows, course, api, unjudged_systems, questions, model=None, verifier=verify, log=print):
-    """没有判官的系统:它答案里的每条结论(证据已经过了前两层)交给判官,记下被否掉几条。"""
+    """答案里的每条结论(证据已经过了前两层)交给判官,记下被否掉几条。默认只做没有判官的系统;
+    带判官的系统也可以做(--systems),那是同一个判官再看一遍它放行过的结论,用来估计判官自己前后不一致的比例。"""
     path = os.path.join(run_dir, "audit.jsonl")
     done = {(a["qid"], a["system"], a["round"], a.get("taskUuid")) for a in scoring.read_jsonl(path)} if os.path.exists(path) else set()
     todo = [r for r in rows if r["system"] in unjudged_systems and r.get("status") == "COMPLETED"
@@ -390,6 +391,7 @@ def main():
     p.add_argument("--course", type=int)
     p.add_argument("--model")
     p.add_argument("--force", action="store_true")
+    p.add_argument("--systems", help="audit:要让判官看的系统,逗号分隔;默认是没有判官的那些。给带判官的系统就是\"同一个判官再看一遍\"")
     p.add_argument("--api", default="http://127.0.0.1:18090/api/v1")
     p.add_argument("--self-check", action="store_true")
     args = p.parse_args()
@@ -413,7 +415,10 @@ def main():
     if args.command == "swap":
         print(json.dumps(swap(rows, args.course, args.n or 50, args.seed, args.api, judged, questions, args.model), ensure_ascii=False, indent=2))
     else:
-        n = audit(args.run_dir, rows, args.course, args.api, set(meta["systems"]) - judged, questions, args.model)
+        targets = set(args.systems.split(",")) if args.systems else set(meta["systems"]) - judged
+        if targets - set(meta["systems"]):
+            p.error(f"这次运行里没有这些系统:{sorted(targets - set(meta['systems']))}")
+        n = audit(args.run_dir, rows, args.course, args.api, targets, questions, args.model)
         print(f"让判官看了 {n} 次运行的答案;重新出报告:python3 eval/course/score.py {args.run_dir}")
     return 0
 

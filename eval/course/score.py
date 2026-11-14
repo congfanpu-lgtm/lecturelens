@@ -19,7 +19,7 @@
   refused      课里没讲的题:说了找不到,或者没有一条通过核验的结论 = 正确拒答。其余的题:说了找不到 = 错误拒答
   steps / 输入输出 token / 成本 / 秒   工具调用次数、token(输入和输出分开)、按 meta 里的单价算的美元、从提交到落定的秒数
   correct      答对率,有 grades.jsonl 才有:这一题说到的要点占比(课里没讲的题按是否正确拒答算 1 或 0)
-  final_bad    只对没有判官的系统,有 audit.jsonl 才有:它答案里的结论,事后被判官否掉的占比
+  final_bad    有 audit.jsonl 才有:答案里的结论事后交给判官,被否掉的占比(带判官的系统是"同一个判官再看一遍")
 
 weak 和 judged_out 都把补一轮之前被拿掉的结论算在内(视图里的 verifications 是每一轮核验的明细)。
 两个系统之间:同一套题上逐题求差,bootstrap 10000 次给 95% 置信区间。区间跨过 0 就是"没有显著差别";
@@ -133,15 +133,15 @@ def bootstrap_diff(a, b, n=10000, seed=7):
     return bootstrap([a[q] - b[q] for q in sorted(a.keys() & b.keys())], n, seed)
 
 
-def dollars(tokens_in, tokens_out, meta, calls=None):
+def dollars(tokens_in, tokens_out, meta, long_call=False):
     """按 meta 里的单价(美元 / 百万 token)算;没给单价返回 None。
     有的型号有两张价目表,按一次调用的输入长度选:超过 tierTokens 时,这次调用的输入和输出整个按另一张算
-    (不是只算超出的部分)。只有一次调用的运行(长上下文基线)才知道那一次有多长,所以只对它们换表;
-    多次调用的运行每次都远小于这个长度。"""
+    (不是只算超出的部分)。运行结果里只有一次运行的总量,不知道每次调用多长,所以只对长上下文的跑法(long_call)换表:
+    它的总量几乎全是那一次调用(再有判官的调用也按高价算,多算不到 1%)。agent 的多次调用每次都远小于这个长度。"""
     if meta.get("priceIn") is None or meta.get("priceOut") is None:
         return None
     tier = meta.get("tierTokens")
-    if tier and calls == 1 and tokens_in > tier and meta.get("priceInTier") is not None:
+    if tier and long_call and tokens_in > tier and meta.get("priceInTier") is not None:
         out_tier = meta["priceOut"] if meta.get("priceOutTier") is None else meta["priceOutTier"]
         return (tokens_in * meta["priceInTier"] + tokens_out * out_tier) / 1e6
     return (tokens_in * meta["priceIn"] + tokens_out * meta["priceOut"]) / 1e6
@@ -160,7 +160,8 @@ def summarise(rows, questions, meta, grades=None, audit=None):
         scored = {(r["qid"], r["round"]): score_row(questions[r["qid"]], r, judged) for r in mine}
         for r in mine:
             sc = scored[(r["qid"], r["round"])]
-            sc["cost"] = None if sc["failed"] else dollars(sc["tokens_in"], sc["tokens_out"], meta, sc.get("calls"))
+            sc["cost"] = None if sc["failed"] else dollars(sc["tokens_in"], sc["tokens_out"], meta,
+                                                           (options.get(s) or {}).get("mode") == "long")
             g = (grades or {}).get((r["qid"], s, r["round"]))
             sc["correct"] = g[1] if g and g[0] == r.get("taskUuid") else None   # 重跑过的运行,旧的分数不算
             a = (audit or {}).get((r["qid"], s, r["round"]))
@@ -246,12 +247,13 @@ def render(summary, meta):
               "- 两栏都把补一轮之前被拿掉的结论算在内。", ""]
     audited = {n: s for n, s in systems.items() if s.get("final_bad_ci")}
     if audited:
-        lines += ["## 事后让判官看没有判官的系统的答案", ""]
+        lines += ["## 事后让判官看答案里的结论", ""]
         for name, s in audited.items():
             m, lo, hi, n = s["final_bad_ci"]
-            lines.append(f"- {name}:答案里的结论有 {100 * m:.0f}% 被判官否掉(95% 区间 {100 * lo:.0f}% 到 {100 * hi:.0f}%,{n} 道题)。"
-                         "带判官的系统这些结论已经被拿掉了,不会出现在答案里;判官自己的准确率见校准结果。")
-        lines.append("")
+            note = ("这套系统带判官:这些结论已经被判官放行过一次,这个数是同一个判官再看一遍时改口的比例。" if s["judged"]
+                    else "这套系统没有判官:这些结论从来没被判官看过。")
+            lines.append(f"- {name}:答案里的结论有 {100 * m:.0f}% 被判官否掉(95% 区间 {100 * lo:.0f}% 到 {100 * hi:.0f}%,{n} 道题)。{note}")
+        lines += ["", "判官自己的准确率见校准结果。", ""]
     lines += ["## 成本和延迟(每问)", "", "| 系统 | 工具调用 | 输入 token 中位 / p90 | 输出 token 中位 / p90 | 美元 中位 / p90 | 秒 中位 / p90 |",
               "|---|---|---|---|---|---|"]
     for name, s in systems.items():
@@ -376,9 +378,10 @@ def self_check():
     assert bootstrap_diff({"a": 1}, {"b": 1}) is None                        # 没有共同的题
     assert dollars(1_000_000, 100_000, {"priceIn": 0.1, "priceOut": 0.5}) == 0.15 and dollars(1, 1, {}) is None
     tiered = {"priceIn": 0.1, "priceOut": 0.5, "tierTokens": 100_000, "priceInTier": 0.5, "priceOutTier": 2.5}
-    assert abs(dollars(200_000, 1_000, tiered, calls=1) - (0.1 + 0.0025)) < 1e-12           # 一次 20 万 token 的调用:整次按另一张价目表
-    assert abs(dollars(100_000, 1_000, tiered, calls=1) - 0.0105) < 1e-12                    # 正好 10 万:还是原来的价
-    assert abs(dollars(200_000, 1_000, tiered, calls=5) - 0.0205) < 1e-12                    # 五次调用加起来 20 万:每次都不超
+    assert abs(dollars(200_000, 1_000, tiered, long_call=True) - (0.1 + 0.0025)) < 1e-12    # 长上下文的一次 20 万 token:整次按另一张价目表
+    assert abs(dollars(100_000, 1_000, tiered, long_call=True) - 0.0105) < 1e-12             # 正好 10 万:还是原来的价
+    assert abs(dollars(200_000, 1_000, tiered) - 0.0205) < 1e-12                             # agent 多次调用加起来 20 万:每次都不超
+    assert abs(dollars(203_000, 1_500, tiered, long_call=True) - (0.1015 + 0.00375)) < 1e-12 # 长上下文再加判官的调用:也按高价,不会少算
 
     # 汇总:12 道单讲题 + 12 道跨讲次题;S1 全答对,S2 跨讲次题全错。失败的那次按 0 算
     questions = {f"s{i}": {**q, "id": f"s{i}"} for i in range(12)}
@@ -419,6 +422,7 @@ def self_check():
     assert "## 事后让判官看" not in text
     assert "模拟模型" in render(out, {**meta, "mock": True})
     assert "| 没有判官 |" in render(audited, meta) and "## 事后让判官看" in render(audited, meta)
+    assert "从来没被判官看过" in render(audited, meta)
 
     import tempfile
     with tempfile.TemporaryDirectory() as d:                                 # 题集改过:拒绝打分;写到一半的行不算

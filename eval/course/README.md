@@ -45,6 +45,7 @@
     python3 eval/course/run.py --name pilot --course 1 --systems S1,S2,S3 --rounds 3 \
         --real --price-in 0.10 --price-out 0.50                                           # 中断后再跑同一条命令会接着跑
     python3 eval/course/calibrate.py audit eval/course/runs/pilot --course 1              # 没有判官的系统:事后让判官看它的答案
+    python3 eval/course/calibrate.py audit eval/course/runs/pilot --course 1 --systems S1 # 带判官的系统:同一个判官再看一遍它放行过的结论
     python3 eval/course/grade.py eval/course/runs/pilot --model <打分模型>                # 答对率
     python3 eval/course/score.py eval/course/runs/pilot                                   # 出报告:summary.md
 
@@ -52,6 +53,8 @@
 - 不带 `--real` 的运行在报告里标成"模拟模型";单价(美元 / 百万 token)不给的话报告里没有成本一栏。
 - 有的型号有两张价目表,按一次调用的输入长度选(例如超过 10 万 token 整次调用按高价)。给
   `--tier-tokens 100000 --price-in-tier 0.50 --price-out-tier 2.50`,只有一次调用的运行(B1)超过这个长度时按高价算。
+- 打分模型回的个数必须等于要点的个数(它有时按结论的条数回):不对就重问,三次都不对这一条先不打分,下次再跑会重打。
+  同样的答案重打一遍,分数会有几个点的出入;要比较两次运行,用同一版 `grade.py` 打分。
 - 没跑成的运行在"命中"类指标上按 0 算。报告开头会提醒还有几次没跑成、几次没打分;先 `--retry-failed` 再看数字。
 
 判官(核验第 3 层)自己的准确率,要有人的标注来量:

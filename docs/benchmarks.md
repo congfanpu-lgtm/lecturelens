@@ -714,13 +714,15 @@ this is the first time the answers, the judge and the grades came from a real on
   [`eval/course/questions.md`](../eval/course/questions.md).
 - **Systems**, all the same `COURSE_QA` task with different options:
   S1 the full system (agent with tools, three verification layers, one repair round);
-  S2 a fixed pipeline (one search with 8 hits, one model call, the same verification);
-  S3 the agent without the judge (layers 1 and 2 only);
-  B1 every transcript of the course (speech only, about 200,000 tokens) in one model call, layers 1 and 2 only.
+  S2 a fixed pipeline (one search with 8 hits, one model call, the same verification, no repair round);
+  S3 the agent without the judge (the code checks only);
+  B1 every transcript of the course (speech only, about 200,000 tokens) in one model call, the code checks
+  only, no repair round.
 - **Runs**: S1, S2 and S3 three rounds each on all 89 questions; B1 one round on every third question (30).
   831 runs, none failed; 17.5 million input tokens, $4.75 at list price ($3.07 of it for the 30 B1 runs).
 - **Scoring**: per question the mean over the rounds, then the mean over questions. Differences are paired per
-  question with a bootstrap 95% interval. "Correct" is the share of a question's required points that the
+  question with a bootstrap 95% interval; the intervals resample questions, so they do not include the
+  variation between rounds or in the grader. "Correct" is the share of a question's required points that the
   answer states, judged point by point by the grader model — and the answer is only the claims that passed
   verification. For a not-in-course question it is 1 if the system said it found nothing.
 
@@ -728,48 +730,61 @@ this is the first time the answers, the judge and the grades came from a real on
 
 | | S1 full | S2 one search | S3 no judge | B1 long context (30 questions) |
 |---|---|---|---|---|
-| Correct | 64% | 44% | 67% | 52% |
-| Correct, one-lecture questions | 69% | 47% | 73% | 49% |
-| Correct, cross-lecture questions | 46% | 24% | 51% | 49% (8 questions) |
+| Correct | 70% | 48% | 72% | 56% |
+| Correct, one-lecture questions | 73% | 50% | 76% | 54% (20 questions) |
+| Correct, cross-lecture questions | 57% | 30% | 62% | 52% (8 questions) |
 | Evidence falls in a gold time range | 97% | 79% | 96% | 86% |
 | The same for every lecture of a cross-lecture question | 41% | 14% | 47% | 25% (8 questions) |
-| Proposed claims removed by the code checks (no evidence, impossible time, quote not found) | 11% | 3% | 12% | 42% |
-| Proposed claims removed by the judge | 8% | 18% | no judge | no judge |
-| Claims left in the answer that the judge rejects when asked afterwards | — | — | 11% [8, 14] | 23% [12, 36] |
+| Share of proposed claims removed by the code checks (no evidence, impossible time, quote not found) | 11% | 3% | 12% | 42% |
+| Share of proposed claims removed by the judge | 8% | 18% | no judge | no judge |
+| Share of the claims left in the answer that the judge rejects when asked afterwards | 5% [3, 7] (asked a second time) | — | 11% [8, 14] | 23% [12, 36] |
 | Not-in-course questions refused (7 questions) | 81% | 86% | 67% | 2 of 2 |
 | Answerable questions refused | 0% | 9% | 0% | 0% |
 | Input tokens per question, median | 20,171 | 3,855 | 16,314 | 200,662 |
 | Cost per question, median | $0.0029 | $0.0008 | $0.0023 | $0.102 |
 | Seconds per question, median / p90 | 10 / 16 | 5 / 6 | 8 / 11 | 5 / 8 |
 
-On the 30 questions B1 ran, S1 is 65% correct and S3 68%. A prompt of more than 100,000 tokens is billed on
-Haiku's higher rate card ($0.50 / $2.50 per million tokens instead of $0.10 / $0.50), which is why B1 costs 35
-times as much as S1 while reading 10 times as many tokens.
+The three "share of claims" rows are means over questions. Pooled over all claims: the code checks removed
+14.7% of S1's 1,318 proposed claims and 46.2% of B1's 104; the judge removed 9.6% of S1's.
+On the 30 questions B1 ran, S1 is 68% correct, S3 72% and S2 47%, and S1's median cost is $0.0026. A prompt of
+more than 100,000 tokens is billed on Haiku's higher rate card ($0.50 / $2.50 per million tokens instead of
+$0.10 / $0.50), which is why B1 costs 35 to 39 times as much as S1 while reading 10 times as many tokens.
 
 **The three expectations written down before the run** (design, section 11)
 
-1. *"On cross-lecture questions S1 is correct more often than S2."* **Holds**: +22.2 points, interval
-   [+10.0, +34.0], 22 questions; on all questions +19.9 [+13.4, +26.3]. One search does not reach two lectures:
+1. *"On cross-lecture questions S1 is correct more often than S2."* **Holds**: +27.3 points, interval
+   [+12.9, +40.5], 22 questions; on all questions +22.2 [+15.4, +29.0]. One search does not reach two lectures:
    S2's evidence covers every lecture of a cross-lecture question 14% of the time against 41%, and it refused
-   9% of the questions the course does answer.
-2. *"S1 has a smaller share of unsupported claims than S3, without a clear drop in correctness."* **Holds as
-   far as the judge can be trusted.** Without the judge, 11% [8, 14] of the claims in S3's answers are ones the
-   judge rejects; with it they are gone. Correctness is 2.5 points lower with the judge, interval [−6.5, +1.6]:
-   no measurable loss, though a loss of up to 6.5 points is not excluded. S3's three rounds scored 64%, 71% and 65%,
-   so one round's swing is as large as this difference. How often the judge is right has not been measured (see below).
+   9% of the questions the course does answer. S1 also has a repair round, which S2 does not (used in 62 of
+   S1's 267 runs).
+2. *"S1 has a smaller share of unsupported claims than S3, without a clear drop in correctness."* **Holds by
+   the judge's own measure; whether the judge is right is not measured.** The judge was asked about the claims
+   in the final answers of both systems: it rejects 10.9% of S3's (never judged before) and 5.2% of S1's (which
+   it had already passed once), difference 5.3 points [+2.8, +7.9] over 85 questions. So the judge roughly
+   halves the claims it objects to, and it contradicts itself on about one claim in twenty. Correctness is 2.1
+   points lower with the judge, interval [−6.1, +2.1]: no measurable loss, though a loss of up to 6 points is
+   not excluded. A referee other than the judge (human labels) is still missing — see below.
 3. *"The course is small enough that B1 will probably be as correct as S1; the case for S1 is cost, evidence
-   location and unsupported claims."* **The answer depends on whether proof is required.**
-   Counting only verified claims, B1 is lower: −12.5 points [−24.7, −1.6] in correctness and −13.1
-   [−27.4, −1.2] in evidence location, on 30 questions. Counting every claim the model proposed, verified or
-   not (an analysis added after the run, 28 questions), B1 is the *most* correct: 76% [67, 85] against 66%
-   [60, 73] for S1, difference +9.7 [+2.4, +16.8]. Verification costs S1 about 3 points and B1 27.
-   So the long context knows more and proves less; S1 is not "more accurate than a long context", it is
-   cheaper (35×) and its claims can be checked.
+   location and unsupported claims."* **Holds for what the model says, not for what it can prove.**
+   - Counting only verified claims — the metric fixed in advance — B1 is lower: −11.8 points [−23.8, −0.6] on
+     30 questions. This is borderline: B1 ran once, and against any single round of S1 the interval includes
+     zero (for example −12.5 [−26.7, +1.7]).
+   - Counting every claim the model proposed, verified or not (an analysis added after the run, 28
+     questions), B1 is at least level: 80% [71, 88] against 71% [64, 79] for S1, difference +8.8
+     [−0.0, +17.2], not separable from zero.
+   - The difference is verification: it takes 27 points from B1 (interval [15, 39]) and 4 from S1 [1, 8].
+     Quotes found word for word at the cited time: −35 points [−46, −24] for B1.
+   - Evidence location (−13.1 [−27.4, −1.2]) is the same effect, not a second one: 3 of B1's 28 answers kept
+     no claim at all and count as misses; of the 25 that kept one, 24 cite a gold range.
+   - Cost: $0.102 against $0.0029 per question.
 
-**Why the long context fails verification: it does not copy.** Every speech quote the models proposed was
-compared with the transcript:
+   So S1 is not "more accurate than a long context". It costs about 35 times less and its claims can be
+   checked; the long context reads everything and cannot reliably show where it read it.
 
-| Quote | S1 (1,185 quotes) | B1 (127 quotes) |
+**Where quotes fail.** Every quote the models proposed was compared with the transcript and the slide text
+(an analysis added after the run):
+
+| Speech quotes | S1 (1,185) | B1 (127) |
 |---|---|---|
 | Found word for word at the cited time | 93.1% | 48.8% |
 | Word for word, but somewhere else in the lecture | 0.5% | 13.4% |
@@ -777,33 +792,54 @@ compared with the transcript:
 | Small edits (a filler word dropped, "…" for a skipped stretch) | 5.1% | 22.0% |
 | Reworded further | 0.3% | 11.0% |
 
-With 200,000 tokens in the prompt, Haiku cites the wrong minute or tidies the sentence in half of its quotes;
-with a few search results in front of it, it copies. Layer 2 accepts only a word-for-word quote at the cited
-time, so about four in ten of B1's rejected quotes are "small edits" a reader would accept. A more forgiving check
-would narrow the gap in expectation 3; this was not tried.
+| Slide quotes | S1 (374) | S3 (340) |
+|---|---|---|
+| Found word for word on the slide shown at the cited time | 48% | 50% |
+| Same letters, different spacing or punctuation | 29% | 30% |
+| Not on any slide of the lecture | 22% | 19% |
+
+- With 200,000 tokens in the prompt, Haiku cites the wrong minute or tidies the sentence in half of its quotes;
+  with a few search results in front of it, it copies. About four in ten of B1's rejected quotes are small
+  edits a reader would accept.
+- **The agent's own quote failures are mostly slide quotes** (about 70% of S1's failed quotes). The OCR text
+  often has words run together ("usemoregpus"); the model writes them apart, and the check compares
+  character by character. Three in ten slide quotes fail for spacing alone. This is a defect of the check, found
+  by this run and not fixed in it (open problem E7).
 
 **The judge.** Fifty verified claims were each given a real but unrelated sentence from another lecture as
 evidence: the judge rejected 50 of 50. That is the easy direction. Whether it is right on evidence that is
 related but does not support the claim needs human labels: 100 claim-and-evidence pairs are exported
 (`pairs.csv`) and **not labelled yet**, so the judge's accuracy, miss rate and false-alarm rate are unknown.
-Until then the 8% it removes from S1 and the 11% it would remove from S3 are its own opinion.
+What is known is its consistency: asked twice about the same claim, it changes its mind on about 5%.
+
+**The grader moves by several points.** The first grading had a defect: in 11% of the replies the grader gave
+one mark per claim of the answer instead of one per required point, and the script cut the list to length. The
+grader now gets the number of points, a reply of the wrong length is asked again, and everything was regraded.
+On the 650 answers whose first reply was well formed, the second grading scored 4 to 6 points higher on every
+system — same answers, one sentence added to the prompt; one row in five changed. So the levels (70% correct)
+are soft by about five points. The differences between systems moved less (S1 − S2 from +19.9 to +22.2, S1 − S3
+from −2.5 to −2.1, B1 − S1 from −12.5 to −11.8) and no verdict changed.
 
 **Not-in-course questions.** Seven questions, 21 runs per system: S1 refused 17, S2 18, S3 14. In 2 of S1's 4
 non-refusals the answer itself says that the course does not give what was asked and then adds what it does
-say; the rule (refused = "found nothing") counts them as failures. The other 2 answer a neighbouring question.
-Seven questions are too few to separate the systems (intervals in the results file).
+say; the rule (refused = "found nothing") counts them as failures. The other 2 answer a neighbouring question —
+every claim supported by a real quote, none of them an answer to the question, which verification does not
+check. Seven questions are too few to separate the systems.
 
 **What this does not show**
 
 - The questions come from a model of the same family as the systems, the grader is the same model as the
-  systems, and nobody checked the grades by hand. The absolute numbers (64% correct) are not comparable with
-  anything outside this run; the differences between systems are the result.
-- One course, one model, one run. B1 ran once on 30 questions, so its intervals are wide.
+  systems, and nobody checked the grades by hand. The levels are not comparable with anything outside this run.
+- Nobody reworded the questions. The design asked for that so that a question does not echo the lecture's
+  wording and hand keyword search a free win; if these do, retrieval (S1 to S3) is favoured over the long context.
+- One course, one model, one run. B1 ran once on 30 questions, so everything about B1 is wide or borderline.
+- The comparison is not symmetric in two places: only S1 and S3 get a repair round, and only S2 and B1 get the
+  reminder after the question (output format, copy the quote word for word).
 - A gold range is one place where the answer is said, not every place: "every lecture of a cross-lecture
   question" punishes an answer that cites another valid passage.
 - B1 saw speech only; S1 and S3 can also cite slides (14% of S1's kept evidence).
-- The analysis without verification and the quote comparison were added after seeing the results; they are
-  exploratory.
+- The analysis without verification, the quote comparison and the judge's second look were added after seeing
+  the results; they are exploratory.
 - The second baseline of the design (a notebook product asked by hand) was not run.
 
 **Found on the way**
@@ -811,7 +847,8 @@ Seven questions are too few to separate the systems (intervals in the results fi
 - In the first smoke test the long-context call answered in prose instead of the JSON format, so every claim
   counted as "no evidence". The two modes without tools now repeat the format after the question; B1's numbers
   above are with that fix.
-- The grader once reasoned point by point instead of returning JSON and stopped the whole grading; a row that
-  cannot be parsed is now skipped and retried on the next run.
+- The grader defects above: one reply in prose stopped the whole grading (a row that cannot be parsed is now
+  skipped and retried), and one reply in nine had the wrong number of marks.
 - One of the seven not-in-course questions (an algorithm name) is on a slide although it is never spoken; the
   questions were written from speech only.
+- The largest S1 run read 69,393 input tokens (19 of 267 above 40,000): the agent's cost has a long tail.

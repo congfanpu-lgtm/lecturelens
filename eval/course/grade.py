@@ -28,7 +28,8 @@ SYSTEM = ("You grade one answer to a question about a lecture course against a l
           "For each point decide whether the answer states it: 1 if the answer says the same thing in any wording "
           "or language, 0 if it is missing, only hinted at, or contradicted. Judge only what the answer says; "
           "do not use your own knowledge to fill gaps, and ignore anything in the answer that is not asked for. "
-          'Reply with JSON only: {"hits":[1,0,...]} with one number per point, in the same order.')
+          'Reply with JSON only: {"hits":[1,0,...]} with exactly one number per required point '
+          "(not one per claim of the answer), in the order of the points.")
 
 
 def answer_text(answer):
@@ -42,14 +43,18 @@ def answer_text(answer):
 
 def user_prompt(question, text):
     points = "\n".join(f"{i}. {p}" for i, p in enumerate(question["points"], 1))
-    return f"Question: {question['question']}\n\nRequired points:\n{points}\n\nAnswer:\n{text}"
+    n = len(question["points"])
+    return (f"Question: {question['question']}\n\nRequired points:\n{points}\n\nAnswer:\n{text}\n\n"
+            f"There are {n} required points: return exactly {n} numbers, one per required point, not one per line of the answer.")
 
 
 def parse_hits(reply, n):
-    """打分模型的输出 → 长度为 n 的 0/1 列表。少给的算 0,多给的丢掉,不是 0/1 的算 0。"""
+    """打分模型的输出 → 长度为 n 的 0/1 列表;不是 0/1 的算 0。个数不是 n 就抛 ValueError:
+    第一轮全量打分里有一成的回复是"每条结论一个数",截掉多出来的等于给前几条结论打分,不是给要点打分。"""
     raw = reply.get("hits") if isinstance(reply, dict) else None
-    hits = [1 if x in (1, True, "1") else 0 for x in raw][:n] if isinstance(raw, list) else []
-    return hits + [0] * (n - len(hits))
+    if not isinstance(raw, list) or len(raw) != n:
+        raise ValueError(f"要 {n} 个数,收到的是 {str(raw)[:80]}")
+    return [1 if x in (1, True, "1") else 0 for x in raw]
 
 
 def grade_row(question, row, ask):
@@ -64,8 +69,14 @@ def grade_row(question, row, ask):
     text = answer_text(answer)
     if not text.strip():
         return {"score": 0.0, "hits": [0] * len(question["points"]), "graded": "", "by": "rule"}
-    reply = ask(SYSTEM, user_prompt(question, text))
-    hits = parse_hits(reply, len(question["points"]))
+    for attempt in range(3):          # 个数不对就再问;三次都不对,抛给 grade_dir,这一题先空着
+        reply = ask(SYSTEM, user_prompt(question, text))
+        try:
+            hits = parse_hits(reply, len(question["points"]))
+            break
+        except ValueError:
+            if attempt == 2:
+                raise
     return {"score": sum(hits) / len(hits), "hits": hits, "graded": text, "by": "model", "reply": reply}
 
 
@@ -114,7 +125,8 @@ def self_check():
     assert g["score"] == 0.5 and g["hits"] == [1, 0] and g["by"] == "model" and g["reply"] == {"hits": [1, 0]}
     assert "1. uses human preferences\n2. trains a reward model" in calls[0]
     # 每条结论前面标着证据所在的讲次;没有证据信息的不标
-    assert calls[0].endswith("Answer:\n[L1, L3] RLHF collects human preferences.\nSecond claim.") and "what is rlhf" in calls[0]
+    assert "Answer:\n[L1, L3] RLHF collects human preferences.\nSecond claim.\n" in calls[0] and "what is rlhf" in calls[0]
+    assert "exactly 2 numbers" in calls[0]                                  # 说明要几个数:不然它常常按结论的条数回
     n = len(calls)
     assert grade_row(q, row([]), ask) == {"score": 0.0, "hits": [0, 0], "graded": "", "by": "rule"}      # 没有通过核验的结论
     assert grade_row(q, row(["x"], status="FAILED"), ask)["score"] == 0.0
@@ -123,8 +135,22 @@ def self_check():
     assert grade_row(absent, row(["Kubernetes is covered in lecture 2."]), ask)["score"] == 0.0
     assert len(calls) == n, "这几种情况都不该调模型"
     assert parse_hits({"hits": [1, "1", True, 2, "yes"]}, 5) == [1, 1, 1, 0, 0]
-    assert parse_hits({"hits": [1]}, 3) == [1, 0, 0] and parse_hits({"hits": [1, 1, 1]}, 2) == [1, 1]
-    assert parse_hits({"scores": [1]}, 2) == [0, 0] and parse_hits("nonsense", 1) == [0]
+    for bad, n in (({"hits": [1]}, 3), ({"hits": [1, 1, 1]}, 2), ({"scores": [1]}, 2), ("nonsense", 1)):
+        try:
+            parse_hits(bad, n)
+            raise AssertionError("个数不对的回复不能当成分数")
+        except ValueError:
+            pass
+    # 打分模型按结论的条数回了(4 个数,要点只有 2 个):再问一次;三次都不对,这一题不打分
+    replies = iter([{"hits": [1, 1, 0, 1]}, {"hits": [0, 1]}])
+    g = grade_row(q, row(["a", "b", "c", "d"]), lambda system, user: next(replies))
+    assert g["hits"] == [0, 1] and g["score"] == 0.5 and g["reply"] == {"hits": [0, 1]}
+    asked = []
+    try:
+        grade_row(q, row(["a"]), lambda system, user: asked.append(1) or {"hits": [1, 1, 1]})
+        raise AssertionError("三次都按结论回,不能给分")
+    except ValueError:
+        assert len(asked) == 3
 
     with tempfile.TemporaryDirectory() as d:
         import hashlib

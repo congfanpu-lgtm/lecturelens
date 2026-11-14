@@ -123,6 +123,18 @@ def run(run_dir, questions, sha, course, systems, rounds, concurrency=2, model=N
     return len(todo)
 
 
+def merged_meta(old, new):
+    """同一个名字的运行接着跑:开始时间、已经跑过的系统沿用;这次没给的单价沿用开始时的;用真实模型开始的运行一直算真实模型。"""
+    out = dict(new)
+    out["startedAt"] = old["startedAt"]
+    out["systems"] = {**old["systems"], **new["systems"]}
+    out["mock"] = old.get("mock", True) and new.get("mock", True)
+    for k, v in old.items():
+        if out.get(k) is None:
+            out[k] = v
+    return out
+
+
 def frozen_problem(path, sha):
     """题集冻结了、而且冻结之后没改过 → None;否则返回一句说明。"""
     lock = os.path.join(os.path.dirname(os.path.abspath(path)), "questions.lock")
@@ -141,6 +153,12 @@ def self_check():
         assert "还没有冻结" in frozen_problem(path, "abc")
         json.dump({"sha256": "abc"}, open(os.path.join(d, "questions.lock"), "w"))
         assert frozen_problem(path, "abc") is None and "被改过" in frozen_problem(path, "other")
+    # 接着跑时没再给单价、没带 --real:沿用开始时的,不把真实模型的运行改成"模拟模型、没有成本"
+    old = {"systems": {"S1": None}, "mock": False, "priceIn": 0.1, "tierTokens": 100000, "startedAt": "t0"}
+    new = {"systems": {"B1": {"mode": "long"}}, "mock": True, "priceIn": None, "tierTokens": None, "startedAt": "t1"}
+    assert merged_meta(old, new) == {"systems": {"S1": None, "B1": {"mode": "long"}}, "mock": False, "priceIn": 0.1,
+                                     "tierTokens": 100000, "startedAt": "t0"}
+    assert merged_meta(old, {**new, "priceIn": 0.2})["priceIn"] == 0.2
     questions = [{"id": "s1", "kind": "single", "question": "what is rlhf"}, {"id": "a1", "kind": "absent", "question": "k8s?"}]
     assert payload(1, questions[0], "S1") == {"courseId": 1, "question": "what is rlhf"}
     assert payload(1, questions[0], "S2", "m")["eval"] == {"mode": "rag"} and payload(1, questions[0], "S2", "m")["model"] == "m"
@@ -243,8 +261,7 @@ def main():
         if old["questionsSha"] != sha or old.get("model") != args.model or old["course"] != args.course:
             print("这个名字的运行是用另一版题集、另一个模型或另一门课开始的。换一个 --name。", file=sys.stderr)
             return 1
-        meta["startedAt"] = old["startedAt"]
-        meta["systems"] = {**old["systems"], **meta["systems"]}
+        meta = merged_meta(old, meta)
     os.makedirs(run_dir, exist_ok=True)
     shutil.copyfile(args.questions, os.path.join(run_dir, "questions.jsonl"))   # 打分、校准只认运行目录里的这一份
     json.dump(meta, open(meta_path, "w"), ensure_ascii=False, indent=2)

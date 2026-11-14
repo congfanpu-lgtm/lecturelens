@@ -51,11 +51,13 @@ twice does no work the second time.
 
 | Course Q&A, 89 questions written by a model, Claude Haiku, 831 runs (section 12) | |
 |---|---|
-| Agent against one search and one call, share of required points answered | 64% against 44%, +19.9 points [+13.4, +26.3]; on the 22 cross-lecture questions 46% against 24%, +22.2 [+10.0, +34.0] |
+| Agent against one search and one call, share of required points answered | 70% against 48%, +22.2 points [+15.4, +29.0]; on the 22 cross-lecture questions 57% against 30%, +27.3 [+12.9, +40.5] |
 | Evidence of the agent's answers falls in a gold time range | 97% of answerable questions (one search: 79%) |
-| With and without the judge | the judge removes 8% of the agent's claims; without it 11% [8, 14] of the claims left in the answer are ones it rejects; correctness −2.5 points [−6.5, +1.6], not separable from zero |
-| Against the whole course in one 200,000-token call (30 questions) | per question $0.0029 against $0.102 (35×); verified correctness 65% against 52%, −12.5 points [−24.7, −1.6] for the long context, because half of its quotes are not word for word at the cited time; **without requiring proof the long context is more correct** (76% against 66% of points; an analysis added after the run) |
-| Unrelated sentence swapped in as evidence | the judge rejected 50 of 50; its accuracy on harder cases is not measured yet |
+| With and without the judge | the judge removes 8% of the agent's claims. Asked afterwards, it rejects 11% of the claims in answers it never saw and 5% in answers it had already passed: difference 5.3 points [+2.8, +7.9]. Correctness −2.1 points [−6.1, +2.1], not separable from zero. The judge itself is not yet checked against human labels |
+| Against the whole course in one 200,000-token call (30 questions, one round) | $0.0029 against $0.102 per question (35×). Counting only verified claims the long context is lower, −11.8 points [−23.8, −0.6], borderline; counting everything it says, it is level or better (80% against 71%, +8.8 [−0.0, +17.2], an analysis added after the run). Verification takes 27 points from it and 4 from the agent: half of its quotes are not word for word at the cited time |
+| Unrelated sentence swapped in as evidence | the judge rejected 50 of 50 |
+| Where the agent's own quotes fail | 93% of its speech quotes are word for word, but only 48% of its slide quotes: the OCR runs words together and the check compares characters (not fixed yet) |
+| How soft the levels are | the same answers regraded with one sentence added to the grader's prompt scored 4 to 6 points higher on every system; the differences between systems moved by less |
 
 ![The course library: eleven lectures with the state and time of every step](docs/img/lecturelens-courses.jpg)
 
