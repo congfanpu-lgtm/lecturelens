@@ -39,6 +39,9 @@ twice does no work the second time.
 | The same link again | 12 s, all from cache |
 | Transcription of a 2-hour lecture | 47× realtime |
 | Slide OCR before and after dedup (2-hour lecture) | 974 → 263 OCR calls, 806 s → 238 s, no slide lost |
+| All 11 lectures of a course (12.7 h) added at once | all ingested, none failed; 929 speech and 1,023 slide segments |
+
+![The course library: eleven lectures with the state and time of every step](docs/img/lecturelens-courses.jpg)
 
 How to run it, the design and the limits are in the [Chinese README](README.zh.md); the design document is
 [`docs/superpowers/specs/2026-11-13-course-video-qa-design.md`](docs/superpowers/specs/2026-11-13-course-video-qa-design.md).

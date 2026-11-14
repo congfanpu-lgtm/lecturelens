@@ -270,7 +270,9 @@ The model stays loaded after the first transcription: about 4.4 GB of VRAM while
   the outcome is the same.) 76% of key frames were OCRed (974 of 1,288), which is where the 13 minutes go. OCR output
   for an unchanged slide differs in spacing ("LLM AgentsMOOC" / "LLM Agents MOOC"), so the exact-text check
   does not remove the repeats; slides that build up line by line add more. Comparing texts with whitespace
-  removed, 896 frames collapse to 359 at similarity 0.9 and to 268 at 0.8.
+  removed, 896 frames collapse to 359 at similarity 0.9 and to 268 at 0.8. (These two were measured with
+  difflib's default heuristics. With the exact comparison the service uses, the merge at 0.8 gives 199; that is
+  the number used in the next section.)
 - Fixed afterwards, see the next section.
 
 ### Frame dedup (fixed)
@@ -295,8 +297,9 @@ is dropped.
   The 7 not matched were checked by hand: all 7 are slides that are in the new list in another build-up state
   or with a different OCR reading (for example "Questions?" without the webcam caption). No slide was lost.
 - 191 frames for a 2-hour lecture is still more than the number of slides: a slide that builds up line by line
-  is kept once per state (median gap between kept frames 24.5 s). That is left as is: each state is what was
-  on screen at that time.
+  is read several times, and at this point the first of several similar readings was kept, so the last bullets
+  of such a slide could be missing. Changed afterwards (`frames.v3.json`): of similar readings the fullest is
+  kept, at the time the slide first appeared. The same lecture then keeps 170 frames from the same 263 OCR runs.
 - OCR costs about 0.9 s per frame on this CPU, so the step is now about 4 minutes for a 2-hour lecture.
 
 ## 8. Lecture ingest on the engine (2026-11-13)
@@ -324,8 +327,8 @@ Seconds from the moment the step's subtask was created until it settled, as the 
   by side, so the wall clock is import + the slower of the two + index.
 - Transcription ran at 24× realtime here against 47× when it ran alone (section 7). The likely cause, not
   measured, is that the OCR of the frames step uses the same CPU cores that transcription needs for decoding
-  and feature extraction. The two steps still finish sooner together than one after the other (196 s against
-  196 + 153 s).
+  and feature extraction. Whether running the two one after the other would be faster was not measured.
+- Every number in this table is from a single run.
 - Adding a link that is already in the media cache does no download, no transcription and no OCR
   (`/stats` of the media service unchanged); only the index is rebuilt.
 - Concepts are produced by the mock model in this environment, so that column only shows the step runs; its
@@ -366,3 +369,50 @@ Both pages (`/courses.html`, `/lecture.html`) were checked in a browser against 
 their times, the failure reason and the retry button; on the lecture page the player, 1,298 transcript lines,
 26 concepts and 191 slide thumbnails, with a click on a transcript line, a concept and a slide each moving the
 player to that second, the search box narrowing the transcript, and no console errors.
+
+### A whole course at once (11 lectures, 12.7 hours of video)
+
+All eleven recorded lectures of the course were added in one go, to see what happens when work queues up
+behind one GPU and 24 CPU cores. Lectures 1-3 already had their download and transcript in the media cache;
+every lecture's frames were recomputed. For this run the course environment allows a step to wait: stuck
+threshold 3,600 s (default 600), media-call timeout 1 h, Kafka `max.poll.interval.ms` 65 min.
+
+**All 11 ended `READY`; none failed.** The last one settled after 114 minutes. Seconds per step, from the
+moment its subtask was created (so queueing is included):
+
+| # | Length | Import | Transcribe | Frames | Index | Concepts | Key frames → OCRed → kept |
+|---|---|---|---|---|---|---|---|
+| 1 | 118.3 min | cached | cached | 920 | 1,102 | <1 | 1,288 → 263 → 170 |
+| 2 | 79.5 min | cached | cached | 440 | 965 | 1,275 | 1,008 → 77 → 47 |
+| 3 | 77.5 min | cached | cached | 396 | 853 | 155 | 1,075 → 84 → 53 |
+| 4 | 94.4 min | 34 | 1,204 | 1,354 | 225 | <1 | 1,175 → 124 → 106 |
+| 5 | 64.6 min | 23 | 505 | 284 | 427 | 293 | 811 → 42 → 42 |
+| 6 | 54.8 min | 19 | 242 | 1,628 | 383 | 649 | 704 → 400 → 52 |
+| 7 | 44.1 min | 108 | 1,271 | **6,701** | 6 | <1 | **79,320 → 3,396 → 94** |
+| 8 | 61.2 min | 456 | 1,137 | 2,223 | 14 | <1 | 768 → 406 → 77 |
+| 9 | 46.9 min | 933 | 853 | 3,114 | 7 | 2,754 | 616 → 96 → 70 |
+| 10 | 59.0 min | 59 | 883 | 1,934 | 12 | <1 | 761 → 173 → 80 |
+| 11 | 61.7 min | 51 | 694 | 1,704 | 56 | 2,235 | 1,124 → 592 → 276 |
+
+What the run showed:
+
+- **A bug: lecture 7's video is VP9, and its decoder ignores "decode key frames only".** Every one of the
+  79,320 frames was treated as a key frame; the frames step ran for 112 minutes. Fixed by also filtering on
+  the key-frame flag. The same lecture alone afterwards: 529 key frames, 64 OCR runs, 50 frames kept, 172 s.
+- **A step that ran for 112 minutes still ended correctly.** At 60 minutes the engine re-dispatched it once and
+  the worker's call timed out and was retried once. Both duplicates waited on the media service's per-lecture
+  lock and returned the finished result (one idempotency hit on the worker); the lecture ended `READY`. With
+  the default 600 s threshold and 3 re-dispatches it would have been marked failed after 40 minutes.
+- **OCR is the bottleneck when lectures are processed together.** The frames step took 284 to 3,114 s here
+  (lecture 7 aside) against 153 to 238 s for a lecture processed alone: up to eleven OCR runs shared the same
+  cores. Transcription times (242 to 1,271 s) are mostly the wait for the single GPU, as designed.
+- **Short steps starve behind long ones.** Building the index is seconds of work but waited up to 1,102 s;
+  the concepts step (under a second with the mock model) waited up to 2,754 s. A consumer thread handles its
+  Kafka partition one message at a time, so a short step queued behind a transcription or a frames step waits
+  for it. This is the "ingest against interactive work" problem the design leaves to version two; a question
+  asked during an import would wait the same way.
+- For three lectures most OCR runs were wasted (lecture 6: 400 runs, 52 frames kept; 8: 406 → 77; 11: 592 →
+  276): something on screen moves that the moving-block mask does not cover. Not investigated yet.
+
+After the fix lecture 7 was ingested again (10 s, everything else cached). The course now holds 929 speech
+segments and 1,023 slide segments.
