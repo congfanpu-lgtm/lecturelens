@@ -496,3 +496,56 @@ def test_the_ocr_reads_exactly_the_decoded_frame(tmp_path, video):
     stored = frames.Local(s).image(KEY, "000000000.png")
     assert np.array_equal(np.asarray(decoded.convert("RGB")), np.asarray(stored.convert("RGB")))
 
+
+# ---- 识别分批并行的整体 review 之后补的 ----
+
+def test_a_second_ingest_of_the_same_media_finds_its_batches_done_after_the_first_one_merged(tmp_path, video, monkeypatch):
+    """同一段视频被两个任务同时摄入(同一个链接提交了两次,或者在两门课里):两个任务各建一套识别子任务。
+    第一个任务合并之后清单就删了,第二个任务后到的那几批以前会拿到 404——worker 不重试,这一讲就没有幻灯片了。"""
+    monkeypatch.setattr("app.frames.OCR_BATCH", 2)
+    s, ocr = media(tmp_path, video), SlideOcr()
+    assert frames.pick(s, KEY)["batches"] == 2 and frames.pick(s, KEY)["batches"] == 2     # 两个任务都挑过帧
+    read_all(s, ocr, Stats())                                                               # 第一个任务做完了
+    calls = ocr.calls
+    late = frames.ocr_batch(frames.Local(s), KEY, 1, ocr, Stats())                          # 第二个任务的一批,晚到了
+    assert late == {"mediaKey": KEY, "batch": 1, "frames": 0, "cached": True} and ocr.calls == calls
+    assert frames.Local(s).save(KEY, 0, {"000000000.png": "x", "000020000.png": "y"}) == 0  # 晚到的结果:不用存了
+    assert frames.merge(s, KEY, Stats())["cached"] is True
+    with pytest.raises(NotFound):                                                            # 根本没挑过帧的:照旧是 404
+        frames.Local(media(tmp_path / "other", video)).batch(KEY, 0)
+
+
+def test_the_batch_size_can_be_set(monkeypatch):
+    """一台机器、不用识别副本时,批可以设得很大(一讲一批):识别子任务少,被别的长步骤堵在队列里的机会就少。"""
+    import importlib
+
+    from app import config
+    monkeypatch.setenv("MEDIA_OCR_BATCH", "500")
+    try:
+        assert importlib.reload(config).OCR_BATCH == 500
+        monkeypatch.setenv("MEDIA_OCR_BATCH", "0")
+        assert importlib.reload(config).OCR_BATCH == 1
+    finally:
+        monkeypatch.undo()
+        assert importlib.reload(config).OCR_BATCH == 20 and frames.OCR_BATCH == 20
+
+
+def test_a_merge_that_died_before_cleaning_up_is_finished_by_the_next_call(tmp_path, video, monkeypatch):
+    """合并写完结果、还没来得及删候选图就死了:下一次合并(重试)把剩下的清掉,不留几十 MB 的 PNG。"""
+    monkeypatch.setattr("app.frames.changed", lambda *a, **k: True)
+    s = media(tmp_path, video)
+    picked = frames.pick(s, KEY)
+    for n in range(picked["batches"]):
+        frames.ocr_batch(frames.Local(s), KEY, n, SlideOcr(), Stats())
+    real_unlink = type(s.dir(KEY)).unlink
+    monkeypatch.setattr(type(s.dir(KEY)), "unlink", lambda self, **k: (_ for _ in ()).throw(OSError("killed")))
+    with pytest.raises(OSError):
+        frames.merge(s, KEY, Stats())                                    # 结果写好了,清理到一半死掉
+    monkeypatch.setattr(type(s.dir(KEY)), "unlink", real_unlink)
+    assert s.read_json(KEY, FRAMES_FILE) is not None and s.read_json(KEY, frames.CANDIDATES_FILE) is not None
+    stats = Stats()
+    assert frames.merge(s, KEY, stats) == {"mediaKey": KEY, "cached": True, "frames": 3} and stats.ocr_runs == 0
+    left = sorted(p.name for p in (s.dir(KEY) / "frames").iterdir())
+    assert left == ["000000000.jpg", "000020000.jpg", "000040000.jpg"]
+    assert s.read_json(KEY, frames.CANDIDATES_FILE) is None and not list(s.dir(KEY).glob("ocr.*.json"))
+

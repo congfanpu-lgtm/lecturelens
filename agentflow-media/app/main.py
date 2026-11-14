@@ -1,10 +1,11 @@
 """HTTP surface of the media service. Run as ONE process: the GPU lock and the counters live in memory."""
 import re
 from functools import lru_cache
+from typing import Annotated
 
 from fastapi import Depends, FastAPI
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel, StrictStr, model_validator
+from pydantic import BaseModel, StrictStr, StringConstraints, model_validator
 
 from . import config
 from .asr import Transcriber, WhisperTranscriber, transcribe_media, transcript_file
@@ -147,7 +148,8 @@ def pick_frames(key: str, store: Store = Depends(get_store)):
 
 
 class BatchTexts(BaseModel):
-    texts: dict[str, StrictStr]
+    # one slide's text; a full slide is a few thousand characters, so this only stops abuse of an unauthenticated port
+    texts: dict[str, Annotated[StrictStr, StringConstraints(max_length=100_000)]]
 
 
 @app.get("/media/{key}/frames/batches/{n}")

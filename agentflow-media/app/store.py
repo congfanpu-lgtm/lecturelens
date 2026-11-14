@@ -22,6 +22,10 @@ class NotFound(KeyError):
     """No such media, or the product has not been made yet (HTTP 404)."""
 
 
+def valid_key(key) -> bool:
+    return isinstance(key, str) and _KEY.fullmatch(key) is not None
+
+
 def file_key(path: Path) -> str:
     with open(path, "rb") as f:
         return hashlib.file_digest(f, "sha256").hexdigest()[:32]
@@ -46,7 +50,7 @@ class Store:
 
     def dir(self, key: str) -> Path:
         # the key ends up in a filesystem path and arrives from HTTP: anything but 32 hex is rejected
-        if not isinstance(key, str) or not _KEY.fullmatch(key):
+        if not valid_key(key):
             raise BadInput(f"bad media key: {key!r}")
         return self.root / "media" / key
 

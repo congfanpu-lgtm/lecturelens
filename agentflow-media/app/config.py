@@ -17,6 +17,10 @@ OCR_THREADS = int(os.environ.get("MEDIA_OCR_THREADS", "8"))
 # MEDIA_OCR_THREADS=-1 leaves the library's default (one thread per core); the slot default then falls back to 1.
 # Never less than 1: zero slots would make every OCR call wait forever.
 OCR_SLOTS = max(1, int(os.environ.get("MEDIA_OCR_SLOTS", str((os.cpu_count() or 4) // OCR_THREADS if OCR_THREADS > 0 else 1))))
+# Picked frames per OCR batch; one batch is one subtask of the engine. Small batches spread a lecture over many
+# workers and their OCR replicas; on a single machine without replicas a large value (one batch per lecture)
+# means fewer subtasks waiting in queues behind other long steps.
+OCR_BATCH = max(1, int(os.environ.get("MEDIA_OCR_BATCH", "20")))
 ALLOWED_HOSTS = {"www.youtube.com", "youtube.com", "m.youtube.com", "youtu.be"}
 # Set on an OCR replica: the address of the media service that holds the files (for example http://172.17.0.1:8010).
 # A replica has no media of its own; it fetches the pictures of a batch from there and sends the text back.

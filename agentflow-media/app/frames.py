@@ -20,7 +20,7 @@ from PIL import Image
 
 from . import config
 from .stats import Stats
-from .store import BadInput, NotFound, Store
+from .store import BadInput, NotFound, Store, valid_key
 
 MIN_TEXT = 10   # frames whose text is shorter than this carry nothing worth indexing
 # The file name carries the version of the algorithm: bumping it makes older results count as "not done yet".
@@ -28,7 +28,7 @@ MIN_TEXT = 10   # frames whose text is shorter than this carry nothing worth ind
 # v3 = of several similar readings of one slide the fullest is kept (v2 kept the first).
 FRAMES_FILE = "frames.v3.json"
 CANDIDATES_FILE = "candidates.v1.json"   # {"keyframes": n, "files": [...]}: the frames picked for OCR, in time order
-OCR_BATCH = 20                           # candidate frames per OCR batch (one batch = one subtask of the engine)
+OCR_BATCH = config.OCR_BATCH             # candidate frames per OCR batch (one batch = one subtask of the engine)
 ROWS, COLS, BLOCK = 9, 16, 10   # the 160x90 thumbnail as 10x10-pixel blocks
 BLOCK_SHARE = 0.05              # a block "changed" when more than 5% of its pixels moved
 NOISY_SHARE = 0.5               # a block that changes between more than half of all key-frame pairs is always moving
@@ -202,6 +202,10 @@ class Local:
         self.store = store
 
     def batch(self, key: str, n: int) -> dict:
+        if self.store.read_json(key, FRAMES_FILE) is not None:
+            # Merged already, by another task that was reading the same media (the same link submitted twice,
+            # the same video in two courses): the list is gone because the work is finished, not missing.
+            return {"files": [], "done": True}
         doc = self.store.read_json(key, CANDIDATES_FILE)
         files = doc["files"][n * OCR_BATCH:(n + 1) * OCR_BATCH] if doc is not None and n >= 0 else []
         if not files:
@@ -212,8 +216,11 @@ class Local:
         return Image.open(self.store.dir(key) / "frames" / name)
 
     def save(self, key: str, n: int, texts: dict[str, str]) -> int:
+        batch = self.batch(key, n)
+        if batch["done"] and not batch["files"]:
+            return 0   # a reading that arrives after the merge: nothing left to store it for
         # the names arrive over HTTP from an OCR replica: only this batch's own files may be written
-        if set(texts) != set(self.batch(key, n)["files"]):
+        if set(texts) != set(batch["files"]):
             raise BadInput(f"texts do not match the files of batch {n}")
         self.store.write_json(key, _texts_file(n), {"texts": texts})
         return len(texts)
@@ -236,8 +243,10 @@ class Remote:
     def __init__(self, base_url: str, send=_http):
         self.base, self.send = base_url.rstrip("/"), send
 
-    def _call(self, method: str, path: str, body: bytes | None = None) -> bytes:
-        status, data = self.send(method, f"{self.base}/media/{path}", body)
+    def _call(self, method: str, key: str, path: str, body: bytes | None = None) -> bytes:
+        if not valid_key(key):   # a replica has no store to check it against, and the key goes into a URL
+            raise BadInput(f"bad media key: {key!r}")
+        status, data = self.send(method, f"{self.base}/media/{key}/{path}", body)
         if status // 100 == 2:
             return data
         detail = data.decode("utf-8", "replace")[:300]
@@ -248,13 +257,13 @@ class Remote:
         raise RuntimeError(f"media service answered {status}: {detail}")
 
     def batch(self, key: str, n: int) -> dict:
-        return json.loads(self._call("GET", f"{key}/frames/batches/{n}"))
+        return json.loads(self._call("GET", key, f"frames/batches/{n}"))
 
     def image(self, key: str, name: str) -> Image.Image:
-        return Image.open(io.BytesIO(self._call("GET", f"{key}/frames/{name}")))
+        return Image.open(io.BytesIO(self._call("GET", key, f"frames/{name}")))
 
     def save(self, key: str, n: int, texts: dict[str, str]) -> int:
-        return json.loads(self._call("PUT", f"{key}/frames/batches/{n}", json.dumps({"texts": texts}).encode()))["stored"]
+        return json.loads(self._call("PUT", key, f"frames/batches/{n}", json.dumps({"texts": texts}).encode()))["stored"]
 
 
 def ocr_batch(source, key: str, n: int, ocr: Ocr, stats: Stats) -> dict:
@@ -271,12 +280,23 @@ def ocr_batch(source, key: str, n: int, ocr: Ocr, stats: Stats) -> dict:
     return {"mediaKey": key, "batch": n, "frames": len(batch["files"]), "cached": batch["done"]}
 
 
+def _clean_up(store: Store, key: str, candidates: dict) -> None:
+    """After the merge: the picked PNGs and the batch readings first, the list of candidates last,
+    so that an interrupted clean-up can be seen (the list is still there) and finished."""
+    for name in candidates["files"]:
+        (store.dir(key) / "frames" / name).unlink(missing_ok=True)
+    for old in [*store.dir(key).glob("ocr.*.json"), store.dir(key) / CANDIDATES_FILE]:
+        old.unlink(missing_ok=True)
+
+
 def merge(store: Store, key: str, stats: Stats) -> dict:
     """Step 3: put the batches back in time order and keep one reading per slide."""
     with store.lock("frames:" + key):
-        if (doc := store.read_json(key, FRAMES_FILE)) is not None:
-            return {"mediaKey": key, "cached": True, "frames": len(doc["frames"])}
         candidates = store.read_json(key, CANDIDATES_FILE)
+        if (doc := store.read_json(key, FRAMES_FILE)) is not None:
+            if candidates is not None:   # an earlier merge wrote the result and died before it had cleaned up
+                _clean_up(store, key, candidates)
+            return {"mediaKey": key, "cached": True, "frames": len(doc["frames"])}
         if candidates is None:
             raise NotFound(f"candidates of {key}")
         texts: dict[str, str] = {}
@@ -302,19 +322,16 @@ def merge(store: Store, key: str, stats: Stats) -> dict:
             text_kept = text
             frames.append({"tsMs": int(name[:9]), "file": name, "text": text})
         # The kept slides become JPEGs for the page (a quarter of the size); the lossless candidates were for the OCR.
-        # Pictures first, then the result, then the clean-up: a crash in between leaves stray files,
-        # never a result without its pictures, and running the merge again repairs it.
+        # Pictures first, then the result, then the clean-up: a crash in between leaves stray files, never a result
+        # without its pictures. The next merge call (a retry) finishes an interrupted clean-up, see above.
         for f in frames:
             jpg = "frames/" + f["file"][:9] + ".jpg"
             Image.open(store.dir(key) / "frames" / f["file"]).convert("RGB").save(store.dir(key) / jpg, quality=80)
             f["file"] = jpg
         store.write_json(key, FRAMES_FILE, {"frames": frames, "keyframes": candidates["keyframes"],
                                             "ocred": len(candidates["files"])})
-        for name in candidates["files"]:
-            (store.dir(key) / "frames" / name).unlink(missing_ok=True)
-        for old in [store.dir(key) / CANDIDATES_FILE, *store.dir(key).glob("ocr.*.json")]:
-            old.unlink(missing_ok=True)
         stats.ocr_runs += 1
+        _clean_up(store, key, candidates)
         return {"mediaKey": key, "cached": False, "frames": len(frames)}
 
 

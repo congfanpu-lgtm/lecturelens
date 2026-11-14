@@ -67,3 +67,21 @@ def test_the_ocr_endpoint_goes_through_the_media_service_when_this_process_is_a_
     monkeypatch.setattr(config, "SOURCE", "http://172.17.0.1:8010")
     source = get_source(store)
     assert isinstance(source, frames.Remote) and source.base == "http://172.17.0.1:8010"
+
+
+def test_a_replica_does_not_forward_a_key_that_is_not_a_media_key(service):
+    """副本自己没有文件可查,key 直接拼进它发给媒体服务的地址里:不是 32 位十六进制的一律不发。"""
+    sent = []
+    remote = frames.Remote("http://media:8010", lambda method, url, body: sent.append(url) or (200, b"{}"))
+    for bad in ("../x", "f" * 31, "F" * 32, "abc?x=1", ""):
+        with pytest.raises(BadInput):
+            frames.ocr_batch(remote, bad, 0, SlideOcr(), Stats())
+    assert sent == []
+
+
+def test_a_slide_text_has_a_length_limit(service):
+    service.post(f"/media/{KEY}/frames/pick")
+    huge = {"texts": {"000000000.png": "x" * 100_001, "000020000.png": "ok"}}
+    assert service.put(f"/media/{KEY}/frames/batches/0", json=huge).status_code == 422
+    assert service.store.read_json(KEY, "ocr.0.json") is None
+
