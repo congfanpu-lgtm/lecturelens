@@ -155,4 +155,33 @@ class CourseApiTest {
         lectureMapper.updateById(l);
         assertEquals("INGESTING", postJson("/api/v1/lectures/" + stuck + "/retry", "", 200).get("status").asText());
     }
+
+    @Test
+    void askingAQuestionStartsACourseQaTask() throws Exception {
+        long c = course();
+        lecture(c, "READY", KEY);
+        String uuid = postJson("/api/v1/courses/" + c + "/questions", "{\"question\":\"what is rlhf\"}", 200).get("taskUuid").asText();
+        mvc.perform(get("/api/v1/questions/" + uuid)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("RUNNING"))
+                .andExpect(jsonPath("$.question").value("what is rlhf"))
+                .andExpect(jsonPath("$.stages[0].kind").value("QA_AGENT"))
+                .andExpect(jsonPath("$.claims.length()").value(0))
+                .andExpect(jsonPath("$.dropped.length()").value(0))
+                .andExpect(jsonPath("$.rounds").value(0));
+    }
+
+    @Test
+    void questionsNeedAnExistingCourseWithLectures() throws Exception {
+        postJson("/api/v1/courses/999999999/questions", "{\"question\":\"q\"}", 404);
+        long empty = course();
+        postJson("/api/v1/courses/" + empty + "/questions", "{\"question\":\"q\"}", 400);     // 还没有处理好的讲次
+        long c = course();
+        lecture(c, "READY", KEY);
+        postJson("/api/v1/courses/" + c + "/questions", "{\"question\":\"   \"}", 400);
+        postJson("/api/v1/courses/" + c + "/questions", "{}", 400);
+        mvc.perform(get("/api/v1/questions/no-such-task")).andExpect(status().isNotFound());
+        String ingest = postJson("/api/v1/courses/" + c + "/lectures", "{\"url\":\"https://youtu.be/abc\"}", 200).get("id").asText();
+        String ingestTask = lectureMapper.selectById(Long.parseLong(ingest)).getTaskUuid();
+        mvc.perform(get("/api/v1/questions/" + ingestTask)).andExpect(status().isNotFound());     // 那是摄入任务,不是提问
+    }
 }

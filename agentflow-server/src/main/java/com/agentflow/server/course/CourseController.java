@@ -9,6 +9,7 @@ import com.agentflow.server.mapper.LectureMapper;
 import com.agentflow.server.mapper.SubtaskMapper;
 import com.agentflow.server.mapper.TaskMapper;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -43,6 +44,7 @@ public class CourseController {
     private static final Pattern FRAME_NAME = Pattern.compile("\\d{9}\\.jpg");
 
     private final LectureService service;
+    private final QuestionService questions;
     private final CourseMapper courseMapper;
     private final LectureMapper lectureMapper;
     private final TaskMapper taskMapper;
@@ -100,6 +102,17 @@ public class CourseController {
     @PostMapping("/lectures/{id}/retry")
     public Map<String, Object> retry(@PathVariable("id") long id) {
         return view(service.retry(id));
+    }
+
+    /** 在一门课里提问:起一个 COURSE_QA 任务(agent 找答案 → 逐条核验),返回任务的 uuid,页面拿它轮询答案。 */
+    @PostMapping("/courses/{id}/questions")
+    public Map<String, String> ask(@PathVariable("id") long id, @RequestBody JsonNode body) {
+        return Map.of("taskUuid", questions.ask(id, body));
+    }
+
+    @GetMapping("/questions/{taskUuid}")
+    public JsonNode answer(@PathVariable("taskUuid") String taskUuid) {
+        return questions.answer(taskUuid);
     }
 
     @GetMapping("/lectures/{id}/transcript")
