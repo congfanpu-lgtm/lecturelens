@@ -758,12 +758,12 @@ $0.10 / $0.50), which is why B1 costs 35 to 39 times as much as S1 while reading
    9% of the questions the course does answer. S1 also has a repair round, which S2 does not (used in 62 of
    S1's 267 runs).
 2. *"S1 has a smaller share of unsupported claims than S3, without a clear drop in correctness."* **Holds by
-   the judge's own measure; whether the judge is right is not measured.** The judge was asked about the claims
+   the judge's own measure, but not against blind labels** (see "The judge against blind labels" below). The judge was asked about the claims
    in the final answers of both systems: it rejects 10.9% of S3's (never judged before) and 5.2% of S1's (which
    it had already passed once), difference 5.3 points [+2.8, +7.9] over 85 questions. So the judge roughly
    halves the claims it objects to, and it contradicts itself on about one claim in twenty. Correctness is 2.1
    points lower with the judge, interval [−6.1, +2.1]: no measurable loss, though a loss of up to 6 points is
-   not excluded. A referee other than the judge (human labels) is still missing — see below.
+   not excluded. Against a referee other than the judge, most of what it removes turns out to be supported.
 3. *"The course is small enough that B1 will probably be as correct as S1; the case for S1 is cost, evidence
    location and unsupported claims."* **Holds for what the model says, not for what it can prove.**
    - Counting only verified claims — the metric fixed in advance — B1 is lower: −11.8 points [−23.8, −0.6] on
@@ -807,10 +807,36 @@ $0.10 / $0.50), which is why B1 costs 35 to 39 times as much as S1 while reading
   by this run and not fixed in it (open problem E7).
 
 **The judge.** Fifty verified claims were each given a real but unrelated sentence from another lecture as
-evidence: the judge rejected 50 of 50. That is the easy direction. Whether it is right on evidence that is
-related but does not support the claim needs human labels: 100 claim-and-evidence pairs are exported
-(`pairs.csv`) and **not labelled yet**, so the judge's accuracy, miss rate and false-alarm rate are unknown.
-What is known is its consistency: asked twice about the same claim, it changes its mind on about 5%.
+evidence: the judge rejected 50 of 50. That is the easy direction. Asked twice about the same claim, it changes
+its mind on about 5%.
+
+**The judge against blind labels: it blocks more good claims than bad ones.** 100 claim-and-evidence pairs
+from S1 and S2 (50 the judge passed, 50 it rejected, each with the excerpt the judge saw) were labelled
+"supported or not" by the same rule as the judge's prompt. **The labellers were a model, not people**: two
+separate Claude Fable 5.2 sessions that saw only the pairs — not the judge's verdicts, not each other, nothing
+about the run. They agree on 96 of 100 (kappa 0.91), and on all 60 where both were confident.
+
+| | Labellers say supported | Labellers say not supported |
+|---|---|---|
+| Judge passed (50) | 39 | 11 |
+| Judge rejected (50) | 27 to 29 | 21 to 23 |
+
+- **What the judge rejects is supported more often than not**: the labellers agree with only 42% to 46% of its
+  rejections (interval for 21 of 50: about 29% to 56%). Where the first labeller was confident, 19 of the
+  judge's 29 rejections were of supported claims.
+- **What the judge passes is mostly fine**: 78% by the strict rule. The other 22% are almost all borderline —
+  a supported claim carrying one extra detail that is not in the excerpt; only 2 of the 35 confident cases
+  are clear misses.
+- Weighted by how often the judge passes and rejects in the run (1,553 against 232): accuracy 73% to 75%; of
+  the supported claims it blocks about 10%; of the unsupported ones (strict rule) it lets about three
+  quarters through. With the judge the answer contains about 22% of claims that fail the strict rule, without
+  it about 25%.
+- So expectation 2 does not survive this check: the judge layer as built (Haiku, thinking off, all claims of
+  an answer in one call, a 600-character excerpt per quote) removes a tenth of the good claims to catch a
+  quarter of the weak ones. On this evidence S3 — the agent with the code checks only — is the better default
+  until the judge is improved; the 100 labelled pairs are now a test set for that.
+- Limits: 100 pairs, model labellers, one course. The labels are in the run directory, not in the repository
+  (they quote the course).
 
 **The grader moves by several points.** The first grading had a defect: in 11% of the replies the grader gave
 one mark per claim of the answer instead of one per required point, and the script cut the list to length. The
