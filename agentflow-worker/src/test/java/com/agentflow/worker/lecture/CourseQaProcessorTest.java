@@ -1,0 +1,201 @@
+package com.agentflow.worker.lecture;
+
+import com.agentflow.common.llm.ChatMessage;
+import com.agentflow.common.llm.ChatRequest;
+import com.agentflow.common.llm.ChatResponse;
+import com.agentflow.common.llm.TokenUsage;
+import com.agentflow.common.llm.ToolCall;
+import com.agentflow.common.llm.ToolSpec;
+import com.agentflow.common.mq.SubtaskMessage;
+import com.agentflow.worker.agent.AgentCheckpoint;
+import com.agentflow.worker.agent.AgentLoop;
+import com.agentflow.worker.agent.Prompts;
+import com.agentflow.worker.llm.LlmGateway;
+import com.agentflow.worker.llm.LlmModelProperties;
+import com.agentflow.worker.media.MediaClient;
+import com.agentflow.worker.rag.RagClient;
+import com.agentflow.worker.rag.RagClient.SegmentHit;
+import com.agentflow.worker.trace.TraceEmitter;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+
+import java.util.List;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+class CourseQaProcessorTest {
+
+    private static final ObjectMapper OM = new ObjectMapper();
+    private static final String LECTURES = "\"lectures\":["
+            + "{\"lectureId\":101,\"seq\":1,\"title\":\"LLM Agents Overview\",\"durationMs\":7101000,\"mediaKey\":\"" + "a".repeat(32) + "\",\"concepts\":[]},"
+            + "{\"lectureId\":103,\"seq\":3,\"title\":\"Post-Training\",\"durationMs\":4648000,\"mediaKey\":\"" + "c".repeat(32) + "\",\"concepts\":[]}]";
+    private static final String QUESTION = "what is reward modeling";
+
+    private final LlmGateway gateway = mock(LlmGateway.class);
+    private final AgentCheckpoint checkpoint = mock(AgentCheckpoint.class);
+    private final RagClient rag = mock(RagClient.class);
+    private final MediaClient media = mock(MediaClient.class);
+    private CourseQaProcessor processor;
+
+    @BeforeEach
+    void setUp() {
+        LlmModelProperties props = new LlmModelProperties();
+        LlmModelProperties.Model m = new LlmModelProperties.Model();
+        m.setName("m");
+        props.setModels(List.of(m));
+        when(checkpoint.load(anyString())).thenReturn(List.of());
+        when(rag.searchSegments(anyLong(), anyString(), anyInt(), any(), any(), any())).thenReturn(List.of(
+                new SegmentHit("103:speech:750000", 103, 750000, 805000, "speech", "You collect human preferences to train a reward model.", 0.9)));
+        AgentLoop loop = new AgentLoop(gateway, List.of(), checkpoint, mock(TraceEmitter.class), props);
+        processor = new CourseQaProcessor(loop, new CourseTools(rag, media));
+    }
+
+    private static ChatResponse search(String query) {
+        ChatResponse r = new ChatResponse("先检索", new TokenUsage(100, 10), "m");
+        r.setToolCalls(List.of(new ToolCall("c1", "search_segments", "{\"query\":\"" + query + "\"}")));
+        return r;
+    }
+
+    private static ChatResponse answer(String content) {
+        return new ChatResponse(content, new TokenUsage(100, 10), "m");
+    }
+
+    private JsonNode run(String extraInput, ChatResponse... script) throws Exception {
+        if (script.length == 1) {
+            when(gateway.chat(any())).thenReturn(script[0]);
+        } else {
+            when(gateway.chat(any())).thenReturn(script[0], java.util.Arrays.copyOfRange(script, 1, script.length));
+        }
+        String input = "{\"courseId\":7,\"question\":\"" + QUESTION + "\"," + LECTURES + extraInput + "}";
+        return OM.readTree(processor.process(new SubtaskMessage(1L, 2L, "uuid-qa", "QA_AGENT", 0, input)));
+    }
+
+    private List<ChatRequest> requests(int n) {
+        ArgumentCaptor<ChatRequest> c = ArgumentCaptor.forClass(ChatRequest.class);
+        verify(gateway, times(n)).chat(c.capture());
+        return c.getAllValues();
+    }
+
+    private static final String GOOD = "{\"notFound\":false,\"claims\":[{\"text\":\"Reward models are trained on human preferences.\","
+            + "\"evidence\":[{\"lecture\":3,\"at\":\"12:30-13:25\",\"source\":\"speech\","
+            + "\"quote\":\"You collect human preferences to train a reward model.\"}]}]}";
+
+    @Test
+    void turnsTheModelsAnswerIntoClaimsWithEvidenceInMilliseconds() throws Exception {
+        JsonNode out = run("", search("reward modeling"), answer(GOOD));
+        assertEquals("QA_AGENT", processor.type());
+        assertEquals(QUESTION, out.get("question").asText());
+        assertFalse(out.get("notFound").asBoolean());
+        JsonNode claim = out.get("claims").get(0);
+        assertEquals("Reward models are trained on human preferences.", claim.get("text").asText());
+        JsonNode e = claim.get("evidence").get(0);
+        assertEquals(103, e.get("lectureId").asLong());
+        assertEquals(3, e.get("seq").asInt());
+        assertEquals(750000, e.get("startMs").asLong());
+        assertEquals(805000, e.get("endMs").asLong());
+        assertEquals("speech", e.get("source").asText());
+        assertEquals("You collect human preferences to train a reward model.", e.get("quote").asText());
+        assertEquals(2, out.get("steps").asInt());
+        assertTrue(out.has("usage"));
+    }
+
+    @Test
+    void theAgentGetsTheCourseToolsAndItsOwnPrompt() throws Exception {
+        run("", search("reward modeling"), answer(GOOD));
+        ChatRequest first = requests(2).get(0);
+        assertTrue(first.getMessages().get(0).getContent().startsWith(Prompts.COURSE_QA_TAG));
+        assertEquals(List.of("course_overview", "search_segments", "read_context"),
+                first.getTools().stream().map(ToolSpec::name).toList());
+        assertEquals(CourseQaProcessor.MAX_TOKENS, first.getMaxTokens());
+        assertEquals(QUESTION, first.getMessages().get(first.getMessages().size() - 1).getContent());
+    }
+
+    @Test
+    void reportsWhichToolsWereCalled() throws Exception {
+        JsonNode calls = run("", search("reward modeling"), answer(GOOD)).get("toolCalls");
+        assertEquals(1, calls.size());
+        assertEquals("search_segments", calls.get(0).get("tool").asText());
+        assertEquals("{\"query\":\"reward modeling\"}", calls.get(0).get("args").asText());
+    }
+
+    @Test
+    void saysNotFoundInsteadOfAnswering() throws Exception {
+        JsonNode out = run("", search("quantum"), answer("{\"notFound\":true,\"claims\":[{\"text\":\"from my own knowledge…\",\"evidence\":[]}]}"));
+        assertTrue(out.get("notFound").asBoolean());
+        assertEquals(0, out.get("claims").size(), "说了找不到,就不能再夹带结论");
+    }
+
+    @Test
+    void evidenceWithAnUnknownLectureOrBadTimeIsDropped() throws Exception {
+        JsonNode out = run("", answer("{\"claims\":[{\"text\":\"A claim.\",\"evidence\":["
+                + "{\"lecture\":99,\"at\":\"12:30-13:25\",\"source\":\"speech\",\"quote\":\"q one is long enough\"},"
+                + "{\"lecture\":3,\"at\":\"around noon\",\"source\":\"speech\",\"quote\":\"q two is long enough\"},"
+                + "{\"lecture\":3,\"at\":\"12:30\",\"source\":\"slide\",\"quote\":\"q three is long enough\"}]}]}"));
+        JsonNode claim = out.get("claims").get(0);
+        assertEquals("A claim.", claim.get("text").asText());                 // 结论留着,由核验决定去留
+        assertEquals(1, claim.get("evidence").size());
+        assertEquals(750000, claim.get("evidence").get(0).get("startMs").asLong());   // 只写了一个时间点:当作那一刻
+        assertEquals(750000, claim.get("evidence").get(0).get("endMs").asLong());
+    }
+
+    @Test
+    void anAnswerThatIsNotJsonBecomesOneClaimWithoutEvidence() throws Exception {
+        JsonNode out = run("", answer("Reward modeling is about preferences, I think."));
+        assertFalse(out.get("notFound").asBoolean());
+        assertEquals(1, out.get("claims").size());
+        assertEquals("Reward modeling is about preferences, I think.", out.get("claims").get(0).get("text").asText());
+        assertEquals(0, out.get("claims").get(0).get("evidence").size());
+    }
+
+    @Test
+    void anEmptyAnswerIsAFailureToRetry() {
+        assertThrows(IllegalStateException.class, () -> run("", answer("  ")));
+    }
+
+    @Test
+    void keepsAtMostTwelveClaimsAndFourPiecesOfEvidenceEach() throws Exception {
+        StringBuilder sb = new StringBuilder("{\"claims\":[");
+        String ev = "{\"lecture\":3,\"at\":\"12:30-13:25\",\"source\":\"speech\",\"quote\":\"a quote long enough\"}";
+        for (int i = 0; i < 15; i++) {
+            sb.append(i == 0 ? "" : ",").append("{\"text\":\"c").append(i).append("\",\"evidence\":[")
+                    .append(String.join(",", ev, ev, ev, ev, ev, ev)).append("]}");
+        }
+        JsonNode claims = run("", answer(sb.append("]}").toString())).get("claims");
+        assertEquals(12, claims.size());
+        assertEquals(4, claims.get(0).get("evidence").size());
+    }
+
+    @Test
+    void historyIsSentBeforeTheQuestion() throws Exception {
+        run(",\"history\":[{\"question\":\"what is SFT\",\"answer\":\"Supervised finetuning on desired answers.\"}]", answer(GOOD));
+        List<ChatMessage> sent = requests(1).get(0).getMessages();
+        assertEquals(List.of("system", "user", "assistant", "user"), sent.stream().map(ChatMessage::getRole).toList());
+        assertEquals("what is SFT", sent.get(1).getContent());
+        assertEquals("Supervised finetuning on desired answers.", sent.get(2).getContent());
+        assertEquals(QUESTION, sent.get(3).getContent());
+    }
+
+    @Test
+    void theSecondRoundShowsTheModelWhatWasRejectedAndWhy() throws Exception {
+        run(",\"feedback\":[{\"text\":\"Reward models never fail.\",\"reason\":\"引用的原文在 L3 12:30-13:25 里找不到\"}]", answer(GOOD));
+        List<ChatMessage> sent = requests(1).get(0).getMessages();
+        String last = sent.get(sent.size() - 1).getContent();
+        assertEquals("user", sent.get(sent.size() - 1).getRole());
+        assertEquals(QUESTION, sent.get(sent.size() - 2).getContent());
+        assertTrue(last.contains("Reward models never fail.") && last.contains("引用的原文在 L3 12:30-13:25 里找不到"), last);
+    }
+}

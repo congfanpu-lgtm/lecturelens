@@ -40,6 +40,7 @@ public class MockLlmClient implements LlmClient {
             "between", "about", "versus", "when", "where", "there", "their", "have");
 
     private static final Pattern FIRST_ITEM = Pattern.compile("(?m)^\\[1] (.+)$");
+    private static final Pattern HIT_BLOCK = Pattern.compile("(?m)^\\[L(\\d+) (\\S+) (speech|slide)]\\n(.+)$");
     private static final Pattern SEGMENT_LINE = Pattern.compile("(?m)^\\[(\\d+)] \\S+ (.*)$");
 
     @Value("${llm.mock.delay-ms:0}")
@@ -69,6 +70,8 @@ public class MockLlmClient implements LlmClient {
             resp = brief(lastUser(msgs));
         } else if (system.startsWith(Prompts.CONCEPTS_TAG)) {
             resp = concepts(lastUser(msgs));
+        } else if (system.startsWith(Prompts.COURSE_QA_TAG)) {
+            resp = courseQa(request, msgs);
         } else {
             resp = summarize(lastUser(msgs));
         }
@@ -138,6 +141,41 @@ public class MockLlmClient implements LlmClient {
     }
 
     /** 每日简报剧本:把第 1 条条目当成一个事件,引文就是它的标题(逐字,能通过 BriefProcessor 的核对)。 */
+    /**
+     * 课程问答:先检索一次;有命中就用第一条命中里的原话作答(引文真的在工具结果里,能通过文字核对);没有命中就说找不到。
+     * 问题里带 FABRICATE:引文换成一句没人说过的话(演练核验的第 2 层);带 UNSUPPORTED:结论里带上这个词(演练判官)。
+     */
+    private ChatResponse courseQa(ChatRequest req, List<ChatMessage> msgs) {
+        String question = "";
+        for (ChatMessage m : msgs) {
+            if ("user".equals(m.getRole()) && m.getContent() != null && !m.getContent().startsWith(Prompts.COURSE_QA_FEEDBACK)) {
+                question = m.getContent();
+            }
+        }
+        List<String> toolOutputs = msgs.stream().filter(m -> "tool".equals(m.getRole()))
+                .map(ChatMessage::getContent).toList();
+        boolean toolsOffered = req.getTools() != null && !req.getTools().isEmpty();
+        if (toolsOffered && toolOutputs.isEmpty()) {
+            return withCall("MOCK 思路:先在这门课里检索。",
+                    new ToolCall("call_1", "search_segments", OM.createObjectNode().put("query", keywords(question)).toString()));
+        }
+        ObjectNode out = OM.createObjectNode();
+        Matcher hit = HIT_BLOCK.matcher(toolOutputs.isEmpty() ? "" : toolOutputs.get(0));
+        if (!hit.find()) {
+            out.put("notFound", true).putArray("claims");
+            return new ChatResponse(out.toString(), null, null);
+        }
+        String text = hit.group(4).trim();
+        String quote = question.contains("FABRICATE") ? "this sentence was never said anywhere in the lecture"
+                : text.substring(0, Math.min(80, text.length())).trim();
+        ObjectNode claim = out.put("notFound", false).putArray("claims").addObject();
+        claim.put("text", "MOCK 结论:第 " + hit.group(1) + " 讲在 " + hit.group(2) + " 提到:"
+                + text.substring(0, Math.min(40, text.length())) + (question.contains("UNSUPPORTED") ? " UNSUPPORTED" : ""));
+        claim.putArray("evidence").addObject().put("lecture", Integer.parseInt(hit.group(1))).put("at", hit.group(2))
+                .put("source", hit.group(3)).put("quote", quote);
+        return new ChatResponse(out.toString(), null, null);
+    }
+
     /** 课程知识点目录:每隔 5 个片段出一个知识点,编号都是输入里真实存在的片段。 */
     private ChatResponse concepts(String user) {
         ObjectNode out = OM.createObjectNode();

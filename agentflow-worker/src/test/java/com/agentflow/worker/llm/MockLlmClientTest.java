@@ -135,4 +135,63 @@ class MockLlmClientTest {
         org.junit.jupiter.api.Assertions.assertEquals("知识点 1", c.get(0).get("name").asText());
         org.junit.jupiter.api.Assertions.assertEquals("知识点 2", c.get(1).get("name").asText());
     }
+
+    // ---- 课程问答(计划 3) ----
+
+    private static final java.util.List<com.agentflow.common.llm.ToolSpec> QA_TOOLS = java.util.List.of(
+            new com.agentflow.common.llm.ToolSpec("search_segments", "d", "{}"));
+
+    private static com.agentflow.common.llm.ChatResponse courseQa(String question, String toolOutput) {
+        java.util.List<com.agentflow.common.llm.ChatMessage> msgs = new java.util.ArrayList<>();
+        msgs.add(new com.agentflow.common.llm.ChatMessage("system", com.agentflow.worker.agent.Prompts.COURSE_QA));
+        msgs.add(new com.agentflow.common.llm.ChatMessage("user", question));
+        if (toolOutput != null) {
+            msgs.add(com.agentflow.common.llm.ChatMessage.assistant("先检索", java.util.List.of(
+                    new com.agentflow.common.llm.ToolCall("c1", "search_segments", "{\"query\":\"x\"}"))));
+            msgs.add(com.agentflow.common.llm.ChatMessage.tool("c1", toolOutput));
+        }
+        com.agentflow.common.llm.ChatRequest req = new com.agentflow.common.llm.ChatRequest("mock-small", msgs, 4000);
+        req.setTools(QA_TOOLS);
+        return new MockLlmClient().chat(req);
+    }
+
+    private static final String HIT = "[L3 12:30-13:25 speech]\nYou collect human preferences to train a reward model. Then you grade responses.\n\n"
+            + "[L1 78:18-78:40 slide]\nRLHF: maximize human preference";
+
+    @Test
+    void courseQaSearchesFirst() {
+        com.agentflow.common.llm.ChatResponse r = courseQa("what is reward modeling", null);
+        org.junit.jupiter.api.Assertions.assertEquals("search_segments", r.getToolCalls().get(0).getName());
+        org.junit.jupiter.api.Assertions.assertTrue(r.getToolCalls().get(0).getArgumentsJson().contains("reward"));
+    }
+
+    @Test
+    void courseQaAnswersWithAQuoteThatIsReallyInTheToolResult() throws Exception {
+        com.fasterxml.jackson.databind.JsonNode out = new com.fasterxml.jackson.databind.ObjectMapper()
+                .readTree(courseQa("what is reward modeling", HIT).getContent());
+        com.fasterxml.jackson.databind.JsonNode e = out.get("claims").get(0).get("evidence").get(0);
+        org.junit.jupiter.api.Assertions.assertEquals(3, e.get("lecture").asInt());
+        org.junit.jupiter.api.Assertions.assertEquals("12:30-13:25", e.get("at").asText());
+        org.junit.jupiter.api.Assertions.assertEquals("speech", e.get("source").asText());
+        org.junit.jupiter.api.Assertions.assertTrue(HIT.contains(e.get("quote").asText()) && e.get("quote").asText().length() >= 12);
+        org.junit.jupiter.api.Assertions.assertFalse(out.get("notFound").asBoolean());
+    }
+
+    @Test
+    void courseQaSaysNotFoundWhenTheSearchFoundNothing() throws Exception {
+        com.fasterxml.jackson.databind.JsonNode out = new com.fasterxml.jackson.databind.ObjectMapper()
+                .readTree(courseQa("what is quantum computing", "这门课里没有找到相关内容:quantum computing").getContent());
+        org.junit.jupiter.api.Assertions.assertTrue(out.get("notFound").asBoolean());
+        org.junit.jupiter.api.Assertions.assertEquals(0, out.get("claims").size());
+    }
+
+    @Test
+    void courseQaCanBeToldToFabricateOrOverclaimForDrills() throws Exception {
+        com.fasterxml.jackson.databind.ObjectMapper om = new com.fasterxml.jackson.databind.ObjectMapper();
+        com.fasterxml.jackson.databind.JsonNode fabricated = om.readTree(courseQa("FABRICATE what is reward modeling", HIT).getContent());
+        org.junit.jupiter.api.Assertions.assertFalse(HIT.contains(fabricated.get("claims").get(0).get("evidence").get(0).get("quote").asText()));
+        com.fasterxml.jackson.databind.JsonNode overclaim = om.readTree(courseQa("UNSUPPORTED what is reward modeling", HIT).getContent());
+        org.junit.jupiter.api.Assertions.assertTrue(overclaim.get("claims").get(0).get("text").asText().contains("UNSUPPORTED"));
+        org.junit.jupiter.api.Assertions.assertTrue(HIT.contains(overclaim.get("claims").get(0).get("evidence").get(0).get("quote").asText()));
+    }
 }
