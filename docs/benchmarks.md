@@ -434,15 +434,76 @@ lectures started at the same moment, 1,259 OCR calls in total, single runs.
 **Correction (2026-11-14, from the code review).** An earlier version of this section called the second number
 "threads per call" and gave the rule "calls × threads ≈ cores". That is not what the code does: there is one OCR
 engine, shared by all calls, so the thread pools are shared too and 12 × 2 does not mean 24 busy threads (its
-load average of 5 says as much). The wall times above stand; the explanation of why 3 × 8 is the fastest does
-not, and was never measured. Giving each slot its own engine, which would make the rule true, has not been
-tried; it is the first measurement of the OCR fan-out work.
+load average of 5 says as much). The wall times above stand; the explanation of why 3 × 8 is the fastest did
+not. The measured explanation is in "What actually limits the OCR" below.
 
 - Limiting is three times faster than not limiting (1,243 s → 405 s) for the same work.
 - The 3 × 8 run shared the machine with a test run for about two minutes, so it is, if anything, understated.
 - One OCR call takes about 1.1 s with 4 threads and under 1.0 s with 8; with 2 threads the cores stay idle.
 - This only removes the thrashing on one machine. More throughput needs more cores: splitting the OCR of a
   lecture into batches fanned out to several machines is listed in `docs/open-problems.md` (P1, second layer).
+
+### What actually limits the OCR (2026-11-14)
+
+Two measurements on the same server (24 cores, 25 GB, WSL2 on a laptop CPU), 240 slide images of one lecture,
+single runs. They replace the guesswork above.
+
+**1. Most of the CPU was spent waiting, not working.** ONNX Runtime's worker threads busy-wait ("spin") between
+two pieces of work. Reading one slide is dozens of small inferences, so the threads never stop spinning.
+One engine, one caller, 60 images:
+
+| Thread pool | Spinning | Slides per second | Cores busy | CPU seconds per slide |
+|---|---|---|---|---|
+| 8 | on (the library default, what ran until now) | 4.35 | 20.8 | 4.77 |
+| 8 | off | 3.86 | 4.4 | 1.15 |
+| 4 | off | 2.97 | 2.9 | 0.98 |
+| 1 | — | 1.19 | 1.0 | 0.87 |
+
+The real work is about one CPU second per slide; the default configuration burned almost five. This is why
+lectures read at the same time starved each other, and the transcription and the Java services with them.
+Spinning is now switched off (`frames._stop_spinning`; the OCR library has no setting for it): with three callers
+on the shared engine, throughput went from 4.50 to 4.11 slides per second and the machine from 22 busy cores to 12.
+
+**2. More engines do not help on this machine: memory is the limit, not cores.** Same 240 images, spinning off,
+each layout in a fresh process:
+
+| Layout | Slides per second | Cores busy | CPU seconds per slide |
+|---|---|---|---|
+| 1 engine, pool of 8, 1 caller (one lecture) | 2.93 | 5.9 | 2.0 |
+| **1 engine, pool of 8, 3 callers (the default)** | **4.11** | 11.8 | 2.9 |
+| 1 engine, pool of 8, 6 callers | 3.50 | 16.8 | 4.8 |
+| 3 engines × 8 threads | 4.32 | 15.2 | 3.5 |
+| 6 engines × 4 threads (one process / six processes) | 3.69 / 3.65 | 18.7 | 5.1 |
+| 12 engines × 2 threads (one process / twelve processes) | 2.88 / 2.80 | 21.5 | 7.6 |
+| 24 engines × 1 thread (one process / 24 processes) | 2.37 / 2.36 | 23 | 9.7 |
+
+Twenty-four single-threaded engines, each of which reads 1.19 slides per second when alone, together read 2.36:
+every slide costs eleven times the CPU it costs alone. Threads or processes make no difference, so it is neither
+Python's lock nor the OCR library. A control experiment shows it is the machine: the same job run 1, 6, 12 and
+24 times at once takes
+
+| At once | Pure CPU loop, seconds per job | Memory-heavy numpy loop (72 MB array), seconds per job |
+|---|---|---|
+| 1 | 0.40 | 0.64 |
+| 6 | 0.42 | 1.09 |
+| 12 | 0.54 | 2.26 |
+| 24 | 0.69 | 5.72 |
+
+The cores are real for pure computation (24 jobs at once are 1.7 times slower each, so about 14 times the
+throughput of one). For memory-heavy work the machine tops out at about 3.5 times one job, and convolutional
+inference over a 1280 × 720 image is memory-heavy work. No layout on this machine reads more than about
+4.5 slides per second.
+
+What follows from it:
+- The defaults stay as they were (one engine, pools of 8, three calls at once); only the spinning goes.
+- An engine per slot, which the code review suggested measuring, is not faster and uses more CPU.
+- Splitting the OCR of a lecture into batches cannot make this one machine faster. What it buys is that a failed
+  batch is retried alone and that a second machine, with its own memory, would add throughput. The second claim
+  is not measured: there is one machine.
+- `MEDIA_OCR_SLOTS=0` used to block every OCR call forever; it now counts as 1.
+
+The scripts were throwaway (`bench_engines.py`, `bench_one.py`, `bench_layouts.py`, `cpu_scaling.py`); each
+does what its table says, with CPU read from `/proc/stat`.
 
 ## 9. Course Q&A (2026-11-13, mock model)
 
@@ -472,3 +533,72 @@ table (with a synthetic two-lecture answer), the conversation record, and no con
 
 After the change to the concept directory (each concept must quote its segment), one lecture's directory was
 regenerated: 12 concepts, all 12 with a quote found in their segment.
+
+## 10. Slide OCR in batches (2026-11-14)
+
+Reading the slides used to be one subtask per lecture, one frame after the other. It is now three steps
+(plan: `docs/superpowers/plans/2026-11-14-ocr-fanout.md`): **pick** the key frames whose picture changed (media
+service), **read** them in batches of 20 (one `LEC_OCR` subtask per batch, spread over the workers by Kafka; each
+worker reads at its own OCR address, which can be an OCR replica on another machine), **merge** the batches in
+time order (inside the index step). The batches start as soon as the pick is done and do not wait for the
+transcription. Same server as before, mock model, single runs.
+
+**The result is the same, slide for slide.** Eight lectures were read again and compared with what the old
+code had produced: 620 slides before, 620 after, same times, 620 of 620 texts identical. That needed one change
+on the way. The OCR now reads a stored picture instead of the decoded frame, and from a JPEG it reads worse
+(60 frames of one lecture, against the text read from the decoded frame):
+
+| Stored as | Texts identical | Spaces between words | Size per frame |
+|---|---|---|---|
+| decoded frame (before) | — | 1,256 | — |
+| JPEG quality 80 | 11 of 60 | 1,055 (−16%) | 56 KB |
+| JPEG quality 92 | 11 of 60 | 1,140 (−9%) | 78 KB |
+| JPEG quality 95, 4:4:4 | 14 of 60 | 1,195 (−5%) | 117 KB |
+| **PNG (what is used)** | **60 of 60** | 1,256 | 232 KB |
+
+Words that run together cannot be found by a search, so the picked frames are stored as PNG; the merge turns
+the kept ones into JPEGs for the page and deletes the rest.
+
+**Speed on this one machine: unchanged. CPU: less than half.**
+
+| | Before | After |
+|---|---|---|
+| Eight lectures' slides at once, 1,259 OCR calls (the harness of section 8) | 405 s, load average 26 | 409 s, 10 cores busy on average, load average 7 |
+| 77-minute lecture, transcription and slides both done, download not counted | 212 s (transcription 196, slides 153) | 135 s (transcription 128; pick 10, OCR 31 in 5 batches; index 5); 146 s with a cold transcription model |
+| The same with thread spinning left on (control) | | 137 s (transcription 131; pick 9, OCR 32) |
+| 118-minute lecture, slides only (263 frames, 14 batches) | 238 s | 95 s (pick 13, OCR 82) |
+
+- The first row is the measured effect of today's change: the same wall time for less than half the CPU,
+  because the OCR threads no longer spin (section 8).
+- The "before" numbers of the second and fourth row are from 2026-11-13, taken before the OCR thread limit
+  existed. Most of the difference comes from that limit, which was never re-measured on a single lecture;
+  the control row shows that neither spinning nor batching changes a single lecture (137 s against 135 s).
+- Batching itself buys no time here: the machine reads about 4 slides per second whatever the layout (section 8).
+
+**OCR replicas on the same machine do not add throughput, as section 8 predicts.** 400 picked frames of one
+lecture; each replica pinned to 6 cores of its own, one batch at a time, pool of 6 threads:
+
+| | Slides per second | Cores busy |
+|---|---|---|
+| 1 replica | 2.59 | 4.9 |
+| 2 replicas | 3.92 | 8.7 |
+| 4 replicas | 4.10 | 15.4 |
+| no replica: the media service itself, three batches at once | 3.96 | 11.4 |
+
+Two replicas are 1.5 times one, four are 1.6 times one: the memory limit again. This is **not** evidence that
+replicas on separate machines would or would not scale; that needs a second machine and has not been measured.
+
+**What the batches do buy: a failure costs one batch.** Through the engine, two workers, each with its own
+replica, the 118-minute lecture (transcription cached):
+
+| | Until searchable | OCR step |
+|---|---|---|
+| nothing killed | 120 s | 93 s; the replicas read 6 and 8 batches, the media service none |
+| one replica killed with SIGKILL 32 s in, started again 10 s later | 130 s | 103 s |
+
+In the second run the four batches in flight were cut and four more failed while the replica was down: eight
+failed attempts, all sent to the 5-second retry topic, all succeeded on retry. Retries are consumed by whichever
+worker is free, so the other worker's replica read 12 of the 14 batches and the restarted one 2. No batch that
+had finished was read again, the lecture ended READY, and its 170 slides are identical to the original ones.
+
+Tests after this work: Java 385 (common 5, server 159, worker 221), retrieval service 44, media service 105.

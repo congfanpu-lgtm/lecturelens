@@ -22,9 +22,10 @@ second.
 flowchart LR
   A[paste a link] --> I[import<br/>yt-dlp / local file]
   I --> T[transcribe<br/>faster-whisper]
-  I --> F[key frames + OCR<br/>PyAV + ONNX Runtime]
+  I --> F[pick key frames<br/>PyAV]
+  F --> O[slide OCR<br/>batches of 20, in parallel<br/>ONNX Runtime]
   T --> X[index<br/>segments → pgvector + BM25]
-  F --> X
+  O --> X
   X --> C[concept directory<br/>LLM]
 ```
 
@@ -35,12 +36,16 @@ twice does no work the second time.
 
 | Measured on one machine (24 cores, one RTX 5080 Laptop GPU), single runs | |
 |---|---|
-| A 77-minute lecture, from link to searchable | 240 s |
+| A 77-minute lecture, from the end of the download to searchable | 135 s (transcription 128 s; meanwhile pick 10 s and OCR 31 s; index 5 s). The download took 28 s when first measured |
 | The same link again | 12 s, all from cache |
 | Transcription of a 2-hour lecture | 47× realtime |
 | Slide OCR before and after dedup (2-hour lecture) | 974 → 263 OCR calls, 806 s → 238 s, no slide lost |
 | All 11 lectures of a course (12.7 h) added at once | all ingested, none failed; 929 speech and 1,023 slide segments |
 | Slide OCR of eight lectures at once, before and after the concurrency limit | 1,243 s → 405 s |
+| The same after the OCR threads stopped busy-waiting | same time (409 s), machine load from 26 to 10 busy cores |
+| Slides after the OCR was split into batches, against the old result | 620 slides of 8 lectures, identical in time and text |
+| One OCR replica killed (SIGKILL) mid-lecture, restarted 10 s later | cut batches retried, finished ones not redone; lecture done in 130 s (120 s without the kill), same slides |
+| More OCR replicas on the same machine | no gain (1 replica 2.6 slides/s, 4 replicas 4.1): OCR is limited by memory bandwidth here; several machines not measured |
 | Worker killed mid-answer | another worker resumes from the checkpointed step; done 51 s later (mock model and mock judge) |
 
 ![The course library: eleven lectures with the state and time of every step](docs/img/lecturelens-courses.jpg)
