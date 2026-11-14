@@ -1,0 +1,214 @@
+#!/usr/bin/env python3
+"""课程问答评测的运行器(零依赖,标准库):把题集里的每道题按每个系统、每一轮提一次,存下原始结果。
+
+  python3 eval/course/run.py --name pilot --course 1 --systems S1,S2,S3 --rounds 3
+      [--questions eval/course/questions.jsonl] [--limit N] [--concurrency 2] [--model 名字]
+      [--api http://127.0.0.1:18090/api/v1] [--timeout 900] [--retry-failed]
+  python3 eval/course/run.py --self-check
+
+被比较的系统都是同一个 COURSE_QA 任务,只是 payload 里的 eval 选项不同:
+  S1  完整系统:agent + 三层核验(默认)
+  S2  固定检索流水线:检索一次 → 一次模型调用作答 → 核验          eval.mode = rag
+  S3  agent,但核验不调判官(只有前两层)                           eval.judge = false
+  B1  整门课的转写放进一次模型调用(长上下文基线),核验只做前两层   eval.mode = long, eval.judge = false
+
+结果逐行追加到 eval/course/runs/<name>/results.jsonl(一行是一题一系统一轮),中断后再跑同一条命令会接着跑:
+已经有结果的不重跑。失败和超时的也记一行(status 说明原因),默认不重跑;--retry-failed 时重跑,打分取最后一行。
+"""
+import argparse
+import datetime
+import json
+import os
+import sys
+import threading
+import time
+import urllib.error
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import questions as qs  # noqa: E402
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+SYSTEMS = {
+    "S1": {},
+    "S2": {"mode": "rag"},
+    "S3": {"judge": False},
+    "B1": {"mode": "long", "judge": False},
+}
+
+
+def http(method, url, body=None, timeout=30):
+    req = urllib.request.Request(url, method=method, data=json.dumps(body).encode() if body is not None else None,
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.load(r)
+
+
+def payload(course, question, system, model=None):
+    p = {"courseId": course, "question": question["question"]}
+    if SYSTEMS[system]:
+        p["eval"] = dict(SYSTEMS[system])
+    if model:
+        p["model"] = model
+    return p
+
+
+def ask(api, body, timeout, submit=None, fetch=None, sleep=time.sleep):
+    """提交一个 COURSE_QA 任务并等到落定。返回 (status, taskUuid, answer)。任何网络错误都记成这一题的结果,不让线程死掉。"""
+    submit = submit or (lambda b: http("POST", f"{api}/tasks", {"type": "COURSE_QA", "payload": b})["taskUuid"])
+    fetch = fetch or (lambda uuid: http("GET", f"{api}/questions/{uuid}"))
+    try:
+        uuid = submit(body)
+    except Exception as e:
+        return f"REJECTED: {type(e).__name__}: {str(e)[:120]}", None, None
+    deadline = time.time() + timeout
+    answer = None
+    while time.time() < deadline:
+        try:
+            answer = fetch(uuid)
+            if answer.get("status") != "RUNNING":
+                return answer["status"], uuid, answer
+        except Exception:
+            pass   # 取答案偶尔失败(server 重启):接着等
+        sleep(1)
+    return "TIMEOUT", uuid, answer
+
+
+def done_keys(path, retry_failed):
+    done = set()
+    if os.path.exists(path):
+        for line in open(path, encoding="utf-8"):
+            if line.strip():
+                r = json.loads(line)
+                if r["status"] == "COMPLETED" or not retry_failed:
+                    done.add((r["qid"], r["system"], r["round"]))
+    return done
+
+
+def run(run_dir, questions, sha, course, systems, rounds, concurrency=2, model=None, api=None, timeout=900,
+        retry_failed=False, asker=ask, log=print):
+    os.makedirs(run_dir, exist_ok=True)
+    results = os.path.join(run_dir, "results.jsonl")
+    done = done_keys(results, retry_failed)
+    todo = [(q, s, n) for n in range(1, rounds + 1) for s in systems for q in questions
+            if (q["id"], s, n) not in done]
+    log(f"{len(todo)} 次要跑,{len(done)} 次已经有结果")
+    lock = threading.Lock()
+    out = open(results, "a", encoding="utf-8")
+
+    def one(item):
+        q, s, n = item
+        t0 = time.time()
+        status, uuid, answer = asker(api, payload(course, q, s, model), timeout)
+        row = {"qid": q["id"], "system": s, "round": n, "questionsSha": sha, "taskUuid": uuid, "status": status,
+               "seconds": round(time.time() - t0, 1), "answer": answer}
+        with lock:   # 写一行落盘一次:中断时最多丢正在跑的那几题
+            out.write(json.dumps(row, ensure_ascii=False) + "\n")
+            out.flush()
+            log(f"{s} 第 {n} 轮 {q['id']}: {status} {row['seconds']} 秒")
+
+    with ThreadPoolExecutor(concurrency) as pool:
+        list(pool.map(one, todo))
+    out.close()
+    return len(todo)
+
+
+def self_check():
+    import tempfile
+    questions = [{"id": "s1", "kind": "single", "question": "what is rlhf"}, {"id": "a1", "kind": "absent", "question": "k8s?"}]
+    assert payload(1, questions[0], "S1") == {"courseId": 1, "question": "what is rlhf"}
+    assert payload(1, questions[0], "S2", "m")["eval"] == {"mode": "rag"} and payload(1, questions[0], "S2", "m")["model"] == "m"
+    assert payload(1, questions[0], "S3")["eval"] == {"judge": False}
+    assert payload(1, questions[0], "B1")["eval"] == {"mode": "long", "judge": False}
+
+    asked = []
+
+    def fake(api, body, timeout):
+        asked.append(body)
+        if body["question"] == "k8s?" and body.get("eval", {}).get("mode") == "rag":
+            return "FAILED", "u-fail", {"status": "FAILED", "error": "QA_AGENT: boom"}
+        return "COMPLETED", "u-ok", {"status": "COMPLETED", "claims": [], "dropped": [], "notFound": True}
+
+    with tempfile.TemporaryDirectory() as d:
+        quiet = lambda *_: None  # noqa: E731
+        assert run(d, questions, "sha-1", 1, ["S1", "S2"], 2, asker=fake, log=quiet) == 8
+        rows = [json.loads(line) for line in open(os.path.join(d, "results.jsonl"))]
+        assert len(rows) == 8 and all(r["questionsSha"] == "sha-1" for r in rows)
+        assert sorted({(r["system"], r["round"]) for r in rows}) == [("S1", 1), ("S1", 2), ("S2", 1), ("S2", 2)]
+        failed = [r for r in rows if r["status"] == "FAILED"]
+        assert len(failed) == 2 and failed[0]["answer"]["error"] == "QA_AGENT: boom"     # 失败的也记一行
+        asked.clear()
+        assert run(d, questions, "sha-1", 1, ["S1", "S2"], 2, asker=fake, log=quiet) == 0 and not asked   # 接着跑:都有了
+        assert run(d, questions, "sha-1", 1, ["S1", "S2"], 3, asker=fake, log=quiet) == 4               # 多一轮:只跑新的
+        assert run(d, questions, "sha-1", 1, ["S1", "S2"], 3, retry_failed=True, asker=fake, log=quiet) == 3
+        assert all(b["question"] == "k8s?" and b["eval"] == {"mode": "rag"} for b in asked[-3:])
+
+    # ask:提交被拒、超时、取答案时出错都变成这一题的状态
+    assert ask(None, {}, 5, submit=lambda b: 1 / 0)[0].startswith("REJECTED: ZeroDivisionError")
+    states = iter([{"status": "RUNNING"}, RuntimeError("server restarting"), {"status": "COMPLETED", "claims": []}])
+
+    def fetch(uuid):
+        s = next(states)
+        if isinstance(s, Exception):
+            raise s
+        return s
+
+    assert ask(None, {}, 5, submit=lambda b: "u1", fetch=fetch, sleep=lambda s: None) == ("COMPLETED", "u1", {"status": "COMPLETED", "claims": []})
+    assert ask(None, {}, 0, submit=lambda b: "u1", fetch=fetch)[0] == "TIMEOUT"
+    print("self-check ok")
+
+
+def main():
+    p = argparse.ArgumentParser(description="课程问答评测的运行器")
+    p.add_argument("--name")
+    p.add_argument("--course", type=int)
+    p.add_argument("--systems", default="S1,S2,S3")
+    p.add_argument("--rounds", type=int, default=3)
+    p.add_argument("--questions", default=os.path.join(HERE, "questions.jsonl"))
+    p.add_argument("--limit", type=int, help="只跑前 N 道题(试跑用)")
+    p.add_argument("--concurrency", type=int, default=2)
+    p.add_argument("--model")
+    p.add_argument("--api", default="http://127.0.0.1:18090/api/v1")
+    p.add_argument("--timeout", type=int, default=900)
+    p.add_argument("--retry-failed", action="store_true")
+    p.add_argument("--self-check", action="store_true")
+    args = p.parse_args()
+    if args.self_check:
+        self_check()
+        return 0
+    if not args.name or not args.course:
+        p.error("要给 --name 和 --course")
+    systems = [s.strip() for s in args.systems.split(",") if s.strip()]
+    unknown = [s for s in systems if s not in SYSTEMS]
+    if unknown:
+        p.error(f"不认识的系统:{unknown};可用的是 {list(SYSTEMS)}")
+    questions, sha = qs.load(args.questions)
+    errors = qs.validate(questions)
+    if errors:
+        print("\n".join(errors), file=sys.stderr)
+        return 1
+    if args.limit:
+        questions = questions[:args.limit]
+    run_dir = os.path.join(HERE, "runs", args.name)
+    meta_path = os.path.join(run_dir, "meta.json")
+    meta = {"name": args.name, "course": args.course, "model": args.model, "questions": os.path.abspath(args.questions),
+            "questionsSha": sha, "systems": {s: SYSTEMS[s] for s in systems},
+            "startedAt": datetime.datetime.now().astimezone().isoformat(timespec="seconds")}
+    if os.path.exists(meta_path):
+        old = json.load(open(meta_path))
+        if old["questionsSha"] != sha or old.get("model") != args.model or old["course"] != args.course:
+            print("这个名字的运行是用另一版题集、另一个模型或另一门课开始的。换一个 --name。", file=sys.stderr)
+            return 1
+        meta["startedAt"] = old["startedAt"]
+        meta["systems"] = {**old["systems"], **meta["systems"]}
+    os.makedirs(run_dir, exist_ok=True)
+    json.dump(meta, open(meta_path, "w"), ensure_ascii=False, indent=2)
+    run(run_dir, questions, sha, args.course, systems, args.rounds, args.concurrency, args.model, args.api,
+        args.timeout, args.retry_failed)
+    print(f"结果在 {run_dir};打分:python3 eval/course/score.py {run_dir}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

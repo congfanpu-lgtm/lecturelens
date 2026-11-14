@@ -1,0 +1,3 @@
+{"id":"ex-single","kind":"single","question":"按评测的对象来分,agent 的评测基准可以分成哪几类?","points":["评测 agent 的某一项能力(函数调用、自我反思、记忆等)","评测 agent 在某一个具体应用上的表现(网页浏览、软件工程等)","评测 agent 在一组通用应用上的表现"],"gold":[{"lecture":4,"from":"25:30","to":"27:10"}],"author":"example","note":"示例题,不属于正式题集"}
+{"id":"ex-cross","kind":"cross","question":"预训练和后训练各自要解决什么问题?第 1 讲和第 5 讲的讲法有什么不同?","points":["第 1 讲:后训练和微调的瓶颈是数据质量和评测,需要的题量和算力比预训练小得多","第 5 讲:预训练是找出关键的积木和高效的拼法,后训练是把积木拼成符合我们需要的世界"],"gold":[{"lecture":1,"from":"11:50","to":"13:00"},{"lecture":5,"from":"48:30","to":"52:50"}],"author":"example","note":"示例题,不属于正式题集"}
+{"id":"ex-absent","kind":"absent","question":"这门课里有没有讲怎么用 Kubernetes 部署 agent 服务?","points":[],"gold":[],"author":"example","note":"示例题,不属于正式题集;课里没讲的题,标准答案是找不到"}
