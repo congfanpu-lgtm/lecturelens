@@ -9,10 +9,10 @@ ASR_COMPUTE = os.environ.get("MEDIA_ASR_COMPUTE", "float16")
 ASR_BATCH = int(os.environ.get("MEDIA_ASR_BATCH", "16"))
 # Slide OCR: SLOTS is how many OCR calls run at once, across all lectures; THREADS is the size of the OCR engine's
 # thread pools. There is ONE engine, shared by all calls (main._rapid), so THREADS is not "threads per call".
-# What limits OCR on the machine this was measured on (24 cores, laptop memory) is memory bandwidth, not cores:
-# with one engine, with an engine per slot, or with an engine per process, total throughput stays near 4.5 slides
-# per second, and 24 single-threaded engines are slower than 3 callers on one engine (docs/benchmarks.md section 8).
-# So the defaults stay "pools of 8, cores // 8 calls at once"; more OCR needs more machines (OCR replicas).
+# On the machine this was measured on (24 cores, laptop memory) no layout reads more than 4.5 slides per second:
+# one engine, an engine per slot and an engine per process all end up there or lower, and 24 single-threaded
+# engines are slower than 3 callers on one engine. The most likely limit is memory bandwidth, not cores
+# (docs/benchmarks.md section 8). So the defaults stay "pools of 8, cores // 8 calls at once".
 OCR_THREADS = int(os.environ.get("MEDIA_OCR_THREADS", "8"))
 # MEDIA_OCR_THREADS=-1 leaves the library's default (one thread per core); the slot default then falls back to 1.
 # Never less than 1: zero slots would make every OCR call wait forever.

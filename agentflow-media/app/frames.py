@@ -1,6 +1,7 @@
 """Slides: decode key frames only, OCR a frame only when the picture changed.
 
-Three steps, so that the OCR (the expensive part) can run in batches on any number of machines:
+Three steps, so that a failed stretch of OCR is repeated alone and the OCR can be handed to other processes
+(OCR replicas, possibly on other machines; whether that is faster has only been measured on one machine, where it is not):
 pick (decode, keep the frames whose picture changed) -> OCR in batches of OCR_BATCH -> merge (drop near-duplicate
 readings). frames_media runs all three in one call."""
 import difflib

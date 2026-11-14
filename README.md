@@ -42,10 +42,11 @@ twice does no work the second time.
 | Slide OCR before and after dedup (2-hour lecture) | 974 → 263 OCR calls, 806 s → 238 s, no slide lost |
 | All 11 lectures of a course (12.7 h) added at once | all ingested, none failed; 929 speech and 1,023 slide segments |
 | Slide OCR of eight lectures at once, before and after the concurrency limit | 1,243 s → 405 s |
-| The same after the OCR threads stopped busy-waiting | same time (409 s), machine load from 26 to 10 busy cores |
+| The same after the OCR threads stopped busy-waiting | same time (409 s), load average from 26 to 7 |
 | Slides after the OCR was split into batches, against the old result | 620 slides of 8 lectures, identical in time and text |
 | One OCR replica killed (SIGKILL) mid-lecture, restarted 10 s later | cut batches retried, finished ones not redone; lecture done in 130 s (120 s without the kill), same slides |
-| More OCR replicas on the same machine | no gain (1 replica 2.6 slides/s, 4 replicas 4.1): OCR is limited by memory bandwidth here; several machines not measured |
+| Three lectures added at once: when each lecture's slides were read, before and after transcription got its own topic | 223 / 320 / 342 s → 53 / 191 / 299 s; the time until all three are searchable does not move (about 340 s, the queue for one GPU) |
+| More OCR replicas on the same machine | no gain (1 replica 2.6 slides/s, 4 replicas 4.1, no replica 4.0): OCR throughput has a ceiling here, most likely memory bandwidth; several machines not measured |
 | Worker killed mid-answer | another worker resumes from the checkpointed step; done 51 s later (mock model and mock judge) |
 
 ![The course library: eleven lectures with the state and time of every step](docs/img/lecturelens-courses.jpg)
