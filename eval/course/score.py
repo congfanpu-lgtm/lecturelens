@@ -135,14 +135,15 @@ def bootstrap_diff(a, b, n=10000, seed=7):
 
 def dollars(tokens_in, tokens_out, meta, calls=None):
     """按 meta 里的单价(美元 / 百万 token)算;没给单价返回 None。
-    有的型号一次调用超过一定长度(tierTokens)时,超出的输入和这次的输出按另一个单价算。只有一次调用的运行
-    (长上下文基线)才知道那一次有多长,所以只对它们分段;多次调用的运行每次都远小于这个长度。"""
+    有的型号有两张价目表,按一次调用的输入长度选:超过 tierTokens 时,这次调用的输入和输出整个按另一张算
+    (不是只算超出的部分)。只有一次调用的运行(长上下文基线)才知道那一次有多长,所以只对它们换表;
+    多次调用的运行每次都远小于这个长度。"""
     if meta.get("priceIn") is None or meta.get("priceOut") is None:
         return None
     tier = meta.get("tierTokens")
     if tier and calls == 1 and tokens_in > tier and meta.get("priceInTier") is not None:
-        return (tier * meta["priceIn"] + (tokens_in - tier) * meta["priceInTier"]
-                + tokens_out * meta.get("priceOutTier", meta["priceOut"])) / 1e6
+        out_tier = meta["priceOut"] if meta.get("priceOutTier") is None else meta["priceOutTier"]
+        return (tokens_in * meta["priceInTier"] + tokens_out * out_tier) / 1e6
     return (tokens_in * meta["priceIn"] + tokens_out * meta["priceOut"]) / 1e6
 
 
@@ -375,7 +376,8 @@ def self_check():
     assert bootstrap_diff({"a": 1}, {"b": 1}) is None                        # 没有共同的题
     assert dollars(1_000_000, 100_000, {"priceIn": 0.1, "priceOut": 0.5}) == 0.15 and dollars(1, 1, {}) is None
     tiered = {"priceIn": 0.1, "priceOut": 0.5, "tierTokens": 100_000, "priceInTier": 0.5, "priceOutTier": 2.5}
-    assert abs(dollars(200_000, 1_000, tiered, calls=1) - (0.01 + 0.05 + 0.0025)) < 1e-12   # 一次 20 万 token 的调用:超出的部分另一个价
+    assert abs(dollars(200_000, 1_000, tiered, calls=1) - (0.1 + 0.0025)) < 1e-12           # 一次 20 万 token 的调用:整次按另一张价目表
+    assert abs(dollars(100_000, 1_000, tiered, calls=1) - 0.0105) < 1e-12                    # 正好 10 万:还是原来的价
     assert abs(dollars(200_000, 1_000, tiered, calls=5) - 0.0205) < 1e-12                    # 五次调用加起来 20 万:每次都不超
 
     # 汇总:12 道单讲题 + 12 道跨讲次题;S1 全答对,S2 跨讲次题全错。失败的那次按 0 算

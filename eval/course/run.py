@@ -202,7 +202,7 @@ def main():
     p.add_argument("--real", action="store_true", help="这次是真实模型(否则报告里标成模拟模型)")
     p.add_argument("--price-in", type=float, help="输入单价,美元 / 百万 token")
     p.add_argument("--price-out", type=float, help="输出单价,美元 / 百万 token")
-    p.add_argument("--tier-tokens", type=int, help="一次调用的输入超过这么多 token 时,超出部分按下面两个单价算")
+    p.add_argument("--tier-tokens", type=int, help="一次调用的输入超过这么多 token 时,这次调用整个按下面两个单价算")
     p.add_argument("--price-in-tier", type=float)
     p.add_argument("--price-out-tier", type=float)
     p.add_argument("--unfrozen", action="store_true", help="题集没冻结也跑(示例题、试链路)")
