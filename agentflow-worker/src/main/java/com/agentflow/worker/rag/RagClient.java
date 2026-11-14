@@ -85,4 +85,47 @@ public class RagClient {
             throw new RuntimeException("RAG 片段写入失败 lectureId=" + lectureId, e);
         }
     }
+
+    /** 课程片段检索的一条命中。 */
+    public record SegmentHit(String id, long lectureId, long startMs, long endMs, String kind, String text, double score) {
+    }
+
+    /** 课程录播:在一门课里检索片段;lectureIds、fromMs、toMs 为 null 表示不限。 */
+    public List<SegmentHit> searchSegments(long courseId, String query, int topK,
+                                           List<Long> lectureIds, Long fromMs, Long toMs) {
+        try {
+            ObjectNode body = OM.createObjectNode();
+            body.put("courseId", courseId);
+            body.put("query", query);
+            body.put("topK", topK);
+            if (lectureIds != null) {
+                ArrayNode ids = body.putArray("lectureIds");
+                lectureIds.forEach(ids::add);
+            }
+            if (fromMs != null) {
+                body.put("fromMs", fromMs);
+            }
+            if (toMs != null) {
+                body.put("toMs", toMs);
+            }
+            HttpRequest req = HttpRequest.newBuilder()
+                    .uri(URI.create(props.getBaseUrl() + "/segments/search"))
+                    .header("Content-Type", "application/json")
+                    .timeout(Duration.ofMillis(props.getTimeoutMs()))
+                    .POST(HttpRequest.BodyPublishers.ofString(OM.writeValueAsString(body)))
+                    .build();
+            HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+            if (resp.statusCode() / 100 != 2) {
+                throw new IllegalStateException("RAG HTTP " + resp.statusCode() + ": " + resp.body());
+            }
+            List<SegmentHit> hits = new ArrayList<>();
+            for (JsonNode h : OM.readTree(resp.body()).path("hits")) {
+                hits.add(new SegmentHit(h.path("id").asText(), h.path("lectureId").asLong(), h.path("startMs").asLong(),
+                        h.path("endMs").asLong(), h.path("kind").asText(), h.path("text").asText(), h.path("score").asDouble()));
+            }
+            return hits;
+        } catch (Exception e) {
+            throw new RuntimeException("RAG 片段检索失败 query=" + query, e);
+        }
+    }
 }

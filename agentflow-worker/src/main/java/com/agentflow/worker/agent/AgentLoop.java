@@ -70,8 +70,11 @@ public class AgentLoop {
         this.props = props;
     }
 
-    /** 一次运行用什么提示词、哪些工具、输出上限多少。循环本身对所有 agent 都一样。 */
-    public record Profile(String systemPrompt, List<AgentTool> tools, int maxTokens) {
+    /**
+     * 一次运行用什么提示词、哪些工具、模型输出上限(token)、单个工具结果给模型看多长(字符)。
+     * 循环本身对所有 agent 都一样。
+     */
+    public record Profile(String systemPrompt, List<AgentTool> tools, int maxTokens, int maxToolChars) {
     }
 
     /** 循环的结果:模型最后的回答原文、用了几步、token 用量、全部已完成的步骤(含续跑前存档的)。 */
@@ -81,7 +84,7 @@ public class AgentLoop {
     /** 研究 agent:全部已注册的工具 + 研究用的提示词,收尾时按 URL 核对引用。 */
     public ObjectNode run(AgentRun run) {
         Profile research = new Profile(Prompts.system(Prompts.AGENT, run.question()),
-                new ArrayList<>(tools.values()), MAX_TOKENS);
+                new ArrayList<>(tools.values()), MAX_TOKENS, TextUtil.MAX_TOOL_CHARS);
         Outcome out = converse(run, research, List.of(new ChatMessage("user", run.question())));
         Set<String> seenUrls = new LinkedHashSet<>();
         Map<String, StringBuilder> textByUrl = new HashMap<>();   // URL → 它所在的那段工具结果,核对摘录用
@@ -141,7 +144,7 @@ public class AgentLoop {
             List<ChatMessage> results = new ArrayList<>();
             ArrayNode calls = OM.createArrayNode();
             for (ToolCall c : resp.getToolCalls()) {
-                String out = execute(c, cache, available);
+                String out = execute(c, cache, available, profile.maxToolChars());
                 results.add(ChatMessage.tool(c.getId(), out));
                 calls.addObject().put("tool", c.getName()).put("args", c.getArgumentsJson())
                         .put("resultPreview", TextUtil.truncate(out, PREVIEW_CHARS));
@@ -165,7 +168,7 @@ public class AgentLoop {
         return new Outcome(resp.getContent(), MAX_STEPS + 1, usage, history);
     }
 
-    private String execute(ToolCall c, Map<String, String> cache, Map<String, AgentTool> available) {
+    private String execute(ToolCall c, Map<String, String> cache, Map<String, AgentTool> available, int maxChars) {
         String key = cacheKey(c);
         String hit = cache.get(key);
         if (hit != null) {
@@ -179,7 +182,7 @@ public class AgentLoop {
         try {
             String raw = c.getArgumentsJson();
             JsonNode args = OM.readTree(raw == null || raw.isBlank() ? "{}" : raw);
-            out = TextUtil.truncate(tool.run(args), TextUtil.MAX_TOOL_CHARS);
+            out = TextUtil.truncate(tool.run(args), maxChars);
         } catch (Exception e) {
             return ERROR + c.getName() + " 调用失败:" + e.getMessage();   // 不缓存:瞬时错误允许模型重试
         }

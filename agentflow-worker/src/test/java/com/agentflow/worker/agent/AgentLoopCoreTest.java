@@ -42,7 +42,7 @@ class AgentLoopCoreTest {
     private final FakeTool research = new FakeTool("web_search");   // 研究 agent 的工具,循环里注册着
     private final FakeTool echo = new FakeTool("echo");             // 这次运行自己的工具
     private final AgentRun run = new AgentRun(1L, 2L, "uuid-qa", "what is rlhf", "m");
-    private final Profile profile = new Profile("[course-qa] 你在回答一门课的问题", List.of(echo), 4000);
+    private final Profile profile = new Profile("[course-qa] 你在回答一门课的问题", List.of(echo), 4000, 12);
     private final List<ChatMessage> seed = List.of(new ChatMessage("user", "what is rlhf"));
 
     private AgentLoop loop(List<AgentStep> archived) {
@@ -83,6 +83,8 @@ class AgentLoopCoreTest {
         assertEquals(2, out.history().size());
         assertEquals(3, out.usage().getCalls());
         assertEquals(1, echo.calls);
+        assertEquals("echo says {\"…", out.history().get(0).toolResults().get(0).getContent(),
+                "工具结果按这次运行的上限(12 个字符)截断");
         assertEquals(0, research.calls, "研究 agent 的工具不在这次运行的工具表里,不能被调用");
         assertTrue(out.history().get(1).toolResults().get(0).getContent().startsWith("ERROR: 未知工具 web_search"));
 
