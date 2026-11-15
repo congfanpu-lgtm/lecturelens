@@ -10,6 +10,11 @@ second.
 
 ![The lecture page: player, transcript, concept directory and slides; a click moves the video to that second](docs/img/lecturelens-lecture.jpg)
 
+![The Q&A page: four claims pass verification; a click on an evidence chip moves the video to lecture 5 at 28:33 and shows the quote; one claim is removed by the judge with its reason](docs/img/lecturelens-qa.jpg)
+
+Both pictures show output of Claude Haiku. The removed claim is also an example of what the evaluation found:
+the judge rejects many claims that the source does support (section 12 of the benchmarks).
+
 | Part | Status |
 |---|---|
 | Ingest: download, transcription, slide OCR, segment index, concept directory | done, measured on the Berkeley Agentic AI MOOC (Fall 2025) recordings |
