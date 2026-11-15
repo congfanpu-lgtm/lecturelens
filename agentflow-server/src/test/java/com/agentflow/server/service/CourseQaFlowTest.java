@@ -213,7 +213,8 @@ class CourseQaFlowTest {
                 OM.readTree("{\"question\":\"what is rlhf\",\"eval\":{\"mode\":\"long\",\"judge\":false}}"));
         long id = taskMapper.selectOne(new QueryWrapper<TaskEntity>().eq("task_uuid", uuid)).getId();
         JsonNode input = OM.readTree(subtaskMapper.selectList(new QueryWrapper<SubtaskEntity>().eq("task_id", id)).get(0).getInput());
-        assertFalse(input.has("mode") || input.has("judge"), input.toString());
+        assertFalse(input.has("mode"), input.toString());
+        assertFalse(input.get("judge").asBoolean(true), "页面的提问接口按默认配置:不调判官");
     }
 
     @Test

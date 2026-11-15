@@ -34,9 +34,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import questions as qs  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# 引擎默认不调判官(评测之后改的,见 docs/benchmarks.md 第 13 节),所以带判官的系统要显式写 judge: true。
+# 2026-11-14 的三次运行(haiku-v1 到 v3)是在默认带判官的时候跑的,那时 S1 是 {}、S2 是 {"mode": "rag"}。
 SYSTEMS = {
-    "S1": {},
-    "S2": {"mode": "rag"},
+    "S1": {"judge": True},
+    "S2": {"mode": "rag", "judge": True},
     "S3": {"judge": False},
     "B1": {"mode": "long", "judge": False},
 }
@@ -160,8 +162,9 @@ def self_check():
                                      "tierTokens": 100000, "startedAt": "t0"}
     assert merged_meta(old, {**new, "priceIn": 0.2})["priceIn"] == 0.2
     questions = [{"id": "s1", "kind": "single", "question": "what is rlhf"}, {"id": "a1", "kind": "absent", "question": "k8s?"}]
-    assert payload(1, questions[0], "S1") == {"courseId": 1, "question": "what is rlhf"}
-    assert payload(1, questions[0], "S2", "m")["eval"] == {"mode": "rag"} and payload(1, questions[0], "S2", "m")["model"] == "m"
+    # 引擎默认不调判官(评测之后改的):带判官的系统要显式写,不然 S1、S2 会悄悄变成没有判官
+    assert payload(1, questions[0], "S1") == {"courseId": 1, "question": "what is rlhf", "eval": {"judge": True}}
+    assert payload(1, questions[0], "S2", "m")["eval"] == {"mode": "rag", "judge": True} and payload(1, questions[0], "S2", "m")["model"] == "m"
     assert payload(1, questions[0], "S3")["eval"] == {"judge": False}
     assert payload(1, questions[0], "B1")["eval"] == {"mode": "long", "judge": False}
 
@@ -185,7 +188,7 @@ def self_check():
         assert run(d, questions, "sha-1", 1, ["S1", "S2"], 2, asker=fake, log=quiet) == 0 and not asked   # 接着跑:都有了
         assert run(d, questions, "sha-1", 1, ["S1", "S2"], 3, asker=fake, log=quiet) == 4               # 多一轮:只跑新的
         assert run(d, questions, "sha-1", 1, ["S1", "S2"], 3, retry_failed=True, asker=fake, log=quiet) == 3
-        assert all(b["question"] == "k8s?" and b["eval"] == {"mode": "rag"} for b in asked[-3:])
+        assert all(b["question"] == "k8s?" and b["eval"] == {"mode": "rag", "judge": True} for b in asked[-3:])
         open(os.path.join(d, "results.jsonl"), "a").write('{"qid": "s1", "system": "S1", "rou')   # 被杀时写到一半的一行
         assert run(d, questions, "sha-1", 1, ["S1"], 3, asker=fake, log=quiet) == 0                  # 接着跑时不会因为它崩掉
 

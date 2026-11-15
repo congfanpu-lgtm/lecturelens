@@ -958,7 +958,9 @@ Asked a second time, it rejects 5% to 7% of the claims it had passed, against 9%
   full runs); the two code checks (time, quote); evidence in a gold range for 96% to 97% of answers.
 - Changed and measured: the slide-quote check.
 - Not earning its place yet: the judge layer. S3 is as correct as S1 or slightly better and 2 s
-  faster per question, and about a fifth cheaper.
+  faster per question, and about a fifth cheaper. **Acted on**: the judge is now off by default
+  (`course.qa.judge`, environment `COURSE_QA_JUDGE`), so the default system is what these runs call S3; the
+  evaluation's S1 and S2 ask for the judge explicitly.
 - Not better than the alternative, only cheaper and checkable: against the whole course in one call, the
   agent's answers are level in content and its evidence can be verified at a thirty-fifth of the cost.
 

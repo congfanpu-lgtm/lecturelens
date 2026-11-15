@@ -13,6 +13,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -41,6 +42,14 @@ public class CourseQaDecomposer implements TaskDecomposer {
     static final List<String> MODES = List.of("agent", "rag", "long");
     static final List<String> EVAL_KEYS = List.of("mode", "judge", "repair");
     static final int MAX_HISTORY_ANSWER_CHARS = 2000;
+
+    /**
+     * 核验要不要调判官(第 3 层)。默认不调:三轮真实评测里(docs/benchmarks.md 第 12、13 节),判官否掉的结论一半以上
+     * 有原文支持,带判官还让答对率低 2 个点。判官改好之后用 course.qa.judge=true(环境变量 COURSE_QA_JUDGE)整体打开;
+     * 单次任务可以用 payload.eval.judge 明确指定,评测里带判官的系统就是这样跑的。
+     */
+    @Value("${course.qa.judge:false}")
+    boolean judgeByDefault;
 
     private final ObjectMapper objectMapper;
     private final CourseMapper courseMapper;
@@ -87,6 +96,10 @@ public class CourseQaDecomposer implements TaskDecomposer {
             in.put("model", payload.get("model").asText());
         }
         evalOptions(payload.path("eval"), in);
+        JsonNode judge = payload.path("eval").path("judge");      // evalOptions 已经保证它要么没有、要么是布尔值
+        if (!(judge.isBoolean() ? judge.asBoolean() : judgeByDefault)) {
+            in.put("judge", false);
+        }
         return List.of(new SubtaskDef(0, in.toString(), AGENT));
     }
 
@@ -173,8 +186,8 @@ public class CourseQaDecomposer implements TaskDecomposer {
 
     /**
      * 评测用的选项(payload.eval,见 docs/superpowers/plans/2026-11-14-course-video-4-eval.md):
-     * mode = rag(检索一次、一次模型调用)或 long(整门课的逐字稿放进一次调用);judge = false(核验不调判官);
-     * repair = false(不补一轮;rag 和 long 固定不补)。不带 eval 时什么都不写进输入,行为和没有这些选项时一样。
+     * mode = rag(检索一次、一次模型调用)或 long(整门课的逐字稿放进一次调用);judge = true / false(核验调不调判官,
+     * 不写时按 judgeByDefault,在 decompose 里处理);repair = false(不补一轮;rag 和 long 固定不补)。
      * 通用的任务提交接口谁都能调,所以不认识的值一律拒绝;页面的提问接口不传 eval(QuestionService)。
      */
     private static void evalOptions(JsonNode eval, ObjectNode in) {
@@ -204,9 +217,6 @@ public class CourseQaDecomposer implements TaskDecomposer {
         }
         if (!"agent".equals(mode)) {
             in.put("mode", mode);
-        }
-        if (!eval.path("judge").asBoolean(true)) {
-            in.put("judge", false);
         }
         if (!"agent".equals(mode) || !eval.path("repair").asBoolean(true)) {
             in.put("repair", false);

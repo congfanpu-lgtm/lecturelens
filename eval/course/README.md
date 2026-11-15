@@ -37,10 +37,13 @@
 
 | 系统 | 是什么 | `eval` |
 |---|---|---|
-| S1 | 完整系统:agent + 三层核验 | (不带) |
-| S2 | 固定检索流水线:检索一次 → 一次模型调用 → 核验 | `{"mode":"rag"}` |
-| S3 | agent,核验不调判官 | `{"judge":false}` |
+| S1 | agent + 三层核验(带判官) | `{"judge":true}` |
+| S2 | 固定检索流水线:检索一次 → 一次模型调用 → 核验(带判官) | `{"mode":"rag","judge":true}` |
+| S3 | agent,核验不调判官。**这是现在的默认配置** | `{"judge":false}` |
 | B1 | 长上下文基线:整门课的逐字稿放进一次调用,核验只做前两层 | `{"mode":"long","judge":false}` |
+
+引擎默认不调判官(三轮评测之后改的:判官否掉的结论一半以上有原文支持),所以带判官的系统要显式写 `judge: true`。
+2026-11-14 的三次运行是在默认带判官时跑的,那时 S1 不带 `eval`、S2 是 `{"mode":"rag"}`;打分和校准脚本读旧的运行信息时仍按"没写就是带判官"理解。
 
     python3 eval/course/run.py --name pilot --course 1 --systems S1,S2,S3 --rounds 3 \
         --real --price-in 0.10 --price-out 0.50                                           # 中断后再跑同一条命令会接着跑

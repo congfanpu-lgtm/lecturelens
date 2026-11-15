@@ -12,7 +12,8 @@ second.
 
 ![The Q&A page: four claims pass verification; a click on an evidence chip moves the video to lecture 5 at 28:33 and shows the quote; one claim is removed by the judge with its reason](docs/img/lecturelens-qa.jpg)
 
-Both pictures show output of Claude Haiku. The removed claim is also an example of what the evaluation found:
+Both pictures show output of Claude Haiku; the Q&A picture was taken with the judge on (it is off by default now).
+The removed claim is also an example of what the evaluation found:
 the judge rejects many claims that the source does support (section 12 of the benchmarks).
 
 | Part | Status |
@@ -20,7 +21,8 @@ the judge rejects many claims that the source does support (section 12 of the be
 | Ingest: download, transcription, slide OCR, segment index, concept directory | done, measured on the Berkeley Agentic AI MOOC (Fall 2025) recordings |
 | Course library page and lecture page | done |
 | Search across a course (dense + BM25, scoped to the course) | done |
-| Q&A agent whose every claim carries lecture, time range and quote; three-layer verification; Q&A page | done |
+| Q&A agent whose every claim carries lecture, time range and quote; verification of time and quote by code; Q&A page | done |
+| Third verification layer: a judge model decides whether the quote supports the claim | built, **off by default**: the evaluation found that more than half of what it rejects is supported (sections 12 and 13); `COURSE_QA_JUDGE=true` switches it on |
 | Evaluation: 89 questions, four systems, paired differences with intervals | three runs with Claude Haiku ([`docs/benchmarks.md`](docs/benchmarks.md) sections 12 and 13); the questions and the judge-calibration labels were written by a model, not by people |
 
 ```mermaid

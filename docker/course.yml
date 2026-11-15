@@ -21,7 +21,7 @@ services:
     # 转写在一张显卡上排队,一讲约 3 分钟:一次加十几讲时,排在后面的那几讲要等半小时以上才轮到。
     # 引擎默认把发出 600 秒没结果的子任务当成卡死(重投 3 次后判失败),会把还在排队的活判成失败,所以这里放宽到 1 小时。
     # 这是对整套环境生效的粗办法;按任务类型分开设超时、摄入和问答隔离是第二版的事(设计文档第 7 节)。
-    environment: {AGENTFLOW_COURSE_ENABLED: "true", MEDIA_BASEURL: "http://host.docker.internal:8010",
+    environment: {AGENTFLOW_COURSE_ENABLED: "true", COURSE_QA_JUDGE: "${COURSE_QA_JUDGE:-false}", MEDIA_BASEURL: "http://host.docker.internal:8010",
                   AGENTFLOW_TIMEOUT_STUCK_SECONDS: "3600"}
   worker-1:
     container_name: !reset null

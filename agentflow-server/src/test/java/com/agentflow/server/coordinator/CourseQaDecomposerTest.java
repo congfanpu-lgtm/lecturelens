@@ -253,7 +253,7 @@ class CourseQaDecomposerTest {
         assertEquals("rag", agentInput("{\"mode\":\"rag\"}").get("mode").asText());
         assertEquals("long", agentInput("{\"mode\":\"long\",\"judge\":false}").get("mode").asText());
         JsonNode plain = json(d.decompose(json("{\"courseId\":3,\"question\":\"what is rlhf\"}")).get(0).inputJson());
-        assertFalse(plain.has("mode") || plain.has("judge") || plain.has("repair"), "不带选项时和以前一样");
+        assertFalse(plain.has("mode") || plain.has("repair"), "不带选项时就是 agent、可以补一轮");
         assertFalse(agentInput("{\"mode\":\"agent\"}").has("mode"));
         // 键写错了(mod、jugde)不能悄悄按完整系统跑:评测里那一组数字就全错了
         for (String bad : new String[]{"{\"mode\":\"everything\"}", "{\"judge\":\"no\"}", "{\"repair\":0}", "\"rag\"", "{\"mode\":5}",
@@ -263,12 +263,33 @@ class CourseQaDecomposerTest {
     }
 
     @Test
+    void theJudgeIsOffUnlessAskedFor() throws Exception {
+        // 三轮真实评测(docs/benchmarks.md 第 12、13 节):判官否掉的结论一半以上有原文支持,还让答对率低 2 个点。
+        // 所以默认不调判官;评测里带判官的系统显式写 judge: true,部署时可以用 course.qa.judge=true 整体打开。
+        JsonNode plain = json(d.decompose(json("{\"courseId\":3,\"question\":\"what is rlhf\"}")).get(0).inputJson());
+        assertFalse(plain.get("judge").asBoolean(true));
+        assertFalse(agentInput("{\"mode\":\"rag\"}").get("judge").asBoolean(true));
+        assertFalse(agentInput("{\"judge\":true}").has("judge"), "带判官:不写这一项,核验照常调判官");
+        d.judgeByDefault = true;
+        try {
+            assertFalse(json(d.decompose(json("{\"courseId\":3,\"question\":\"what is rlhf\"}")).get(0).inputJson()).has("judge"));
+            assertFalse(agentInput("{\"judge\":false}").get("judge").asBoolean(true), "整体打开时,单次仍然可以关掉");
+        } finally {
+            d.judgeByDefault = false;
+        }
+    }
+
+    @Test
     void withoutTheJudgeVerifyIsToldSo() throws Exception {
         String input = d.decompose(json("{\"courseId\":3,\"question\":\"what is rlhf\",\"eval\":{\"judge\":false}}")).get(0).inputJson();
         List<SubtaskEntity> subs = new ArrayList<>(List.of(sub(0, "QA_AGENT", "COMPLETED", input, afterAgent(2).get(0).getOutput())));
         JsonNode verify = json(d.nextStage(task(), subs).get(0).inputJson());
         assertFalse(verify.get("judge").asBoolean(true));
-        assertFalse(json(d.nextStage(task(), afterAgent(2)).get(0).inputJson()).has("judge"), "默认不写这一项,核验照常调判官");
+        // 默认(不带选项)也不调判官;明确要判官的,作答那一步的输入里没有这一项,核验照常调
+        assertFalse(json(d.nextStage(task(), afterAgent(2)).get(0).inputJson()).get("judge").asBoolean(true));
+        String judged = d.decompose(json("{\"courseId\":3,\"question\":\"what is rlhf\",\"eval\":{\"judge\":true}}")).get(0).inputJson();
+        subs = new ArrayList<>(List.of(sub(0, "QA_AGENT", "COMPLETED", judged, afterAgent(2).get(0).getOutput())));
+        assertFalse(json(d.nextStage(task(), subs).get(0).inputJson()).has("judge"));
     }
 
     @Test
