@@ -1,5 +1,7 @@
 # 课程录播 · 计划 3：问答 agent、三层核验、问答页 Implementation Plan
 
+> **状态:** 已完成并做过整体审查(2026-11-14)。逐项进度记在提交历史里,下面的勾没有逐个更新。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 在一门课的范围里提问，agent 自己决定查哪几讲、搜什么、读哪一段，给出一条条结论；每条结论带"第几讲、哪一段时间、原话是什么"的证据，由代码逐条核验，通不过的结论从答案里拿掉并写明原因。

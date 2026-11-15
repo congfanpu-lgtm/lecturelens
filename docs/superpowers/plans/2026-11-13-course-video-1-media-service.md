@@ -1,5 +1,7 @@
 # 课程录播 · 计划 1：媒体服务（下载、转写、截帧识别） Implementation Plan
 
+> **状态:** 已完成(2026-11-13)。逐项进度记在提交历史里,下面的勾没有逐个更新。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 新增一个跑在 GPU 宿主机上的 Python 服务 `agentflow-media`：给一个 YouTube 链接或本地文件，下载、转写成带时间戳的文本、截出幻灯片并识别上面的文字，结果按内容哈希缓存在磁盘上。

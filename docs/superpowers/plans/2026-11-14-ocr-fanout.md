@@ -1,5 +1,7 @@
 # 幻灯片识别分批并行(OCR fan-out)Implementation Plan
 
+> **状态:** 已完成并做过整体审查(2026-11-14);跨机器扩展没有测(只用一台机器)。逐项进度记在提交历史里,下面的勾没有逐个更新。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 把"识别幻灯片"从一讲一个子任务、一帧接一帧,拆成"挑帧 → 按批识别(Kafka 分给 worker 池)→ 合并去重",让识别能用满一台机器,并且能靠加机器扩容。

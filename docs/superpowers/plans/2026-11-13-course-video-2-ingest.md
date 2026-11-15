@@ -1,5 +1,7 @@
 # 课程录播 · 计划 2：引擎上的摄入（课程、讲次、分段、索引、知识点目录、两个页面） Implementation Plan
 
+> **状态:** 已完成(2026-11-13)。逐项进度记在提交历史里,下面的勾没有逐个更新。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 在课程库页面贴一个 YouTube 链接（或填一个本地文件名），AgentFlow 把这一讲下载、转写、截帧识别、分段、建索引、生成知识点目录，单讲页能看到逐字稿、幻灯片和知识点目录，并且点一下就跳到视频的那一秒。

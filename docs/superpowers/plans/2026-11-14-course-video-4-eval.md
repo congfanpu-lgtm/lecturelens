@@ -1,5 +1,7 @@
 # 课程问答评测(计划 4)Implementation Plan
 
+> **状态:** 任务 1 到 10 已完成,三轮真实模型评测已跑(2026-11-14),结果在 `docs/benchmarks.md` 第 12、13 节。任务 1 到 7 的勾没有逐个更新;唯一没做的是 B2(Gemini Notebook 基线)。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 把设计文档第 11 节的评测做成可以一条命令重跑的东西:题集、四个被比较的系统、打分、统计、判官校准、故障演练,结果进 `docs/benchmarks.md`。
