@@ -19,7 +19,7 @@ import org.springframework.transaction.annotation.Transactional;
  * done+failed==total 时判终态:全成 COMPLETED / 部分成 PARTIAL_FAILED / 全败 FAILED。
  * 终态判定用「计数列 + CAS」而非 COUNT(*),并发下只有一个回调触发聚合。
  * 终态判定 + 聚合逻辑抽到 {@link TaskFinalizer},与超时兜底 {@link TimeoutSweepService} 共用;
- * 落定后先经 {@link StageAdvancer} 判断是否有下一阶段(RESEARCH_AGENT 的 plan → agents → synthesize)。
+ * 落定后先经 {@link StageAdvancer} 判断是否有下一阶段(比如 LECTURE_INGEST 的 导入 → 转写、识别 → 建索引 → 知识点目录)。
  */
 @Slf4j
 @Service

@@ -64,19 +64,20 @@ class StageAdvanceIsolationTest {
     void stageAdvanceSeesResultCommittedByConcurrentTransaction() {
         TaskEntity t = new TaskEntity();
         t.setTaskUuid(UUID.randomUUID().toString());
-        t.setType("RESEARCH_AGENT");
+        t.setType("LECTURE_INGEST");
         t.setStatus("RUNNING");
-        t.setPayload("{\"question\":\"q\"}");
+        t.setPayload("{\"courseId\":1,\"lectureId\":1}");
         t.setSubtaskTotal(3);
-        t.setSubtaskDone(1);   // PLAN 已完成
+        t.setSubtaskDone(1);   // 导入已完成
         t.setSubtaskFailed(0);
         taskMapper.insert(t);
         taskId = t.getId();
-        SubtaskEntity plan = sub(0, "PLAN", "COMPLETED", "{\"question\":\"q\"}");
-        plan.setOutput("{\"subQuestions\":[\"a\",\"b\"]}");
-        subtaskMapper.updateById(plan);
-        SubtaskEntity a = sub(1, "AGENT", "DISPATCHED", "{\"question\":\"a\"}");
-        SubtaskEntity b = sub(2, "AGENT", "DISPATCHED", "{\"question\":\"b\"}");
+        // 一讲课的摄入:导入之后转写(A)和挑帧(B)并行,两条线都落定才建索引
+        SubtaskEntity imported = sub(0, "LEC_IMPORT", "COMPLETED", "{\"lectureId\":1}");
+        imported.setOutput("{\"mediaKey\":\"k\",\"durationMs\":60000}");
+        subtaskMapper.updateById(imported);
+        SubtaskEntity a = sub(1, "LEC_TRANSCRIBE", "DISPATCHED", "{\"lectureId\":1,\"mediaKey\":\"k\"}");
+        SubtaskEntity b = sub(2, "LEC_FRAMES", "DISPATCHED", "{\"lectureId\":1,\"mediaKey\":\"k\"}");
 
         // B 的处理事务读过库之后(发 SUBTASK_SETTLED 轨迹时),A 的结果在独立事务里提交
         TransactionTemplate other = new TransactionTemplate(txManager);
@@ -85,7 +86,7 @@ class StageAdvanceIsolationTest {
             other.executeWithoutResult(st -> {
                 subtaskMapper.casStatus(a.getId(), "DISPATCHED", "COMPLETED");
                 SubtaskEntity done = subtaskMapper.selectById(a.getId());
-                done.setOutput("{\"answer\":\"A1\",\"sources\":[]}");
+                done.setOutput("{\"utterances\":12}");
                 subtaskMapper.updateById(done);
                 taskMapper.incrementDone(taskId);
             });
@@ -95,7 +96,7 @@ class StageAdvanceIsolationTest {
         service.handle(new ResultMessage(taskId, b.getId(), false, null, "boom"));
 
         assertEquals(1, subtaskMapper.selectCount(new QueryWrapper<SubtaskEntity>()
-                .eq("task_id", taskId).eq("kind", "SYNTHESIZE")), "A 已成功,必须进入合成阶段");
+                .eq("task_id", taskId).eq("kind", "LEC_INDEX")), "转写已成功、挑帧已落定(失败),必须进入建索引阶段");
         assertEquals("RUNNING", taskMapper.selectById(taskId).getStatus());
     }
 }

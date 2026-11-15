@@ -159,23 +159,16 @@ fresh clone of the fixed build.
 Throughput is the same on both because the ceiling is set by the 300 ms simulated work per thread, not by the
 hardware.
 
-## 4. Agent crash recovery (real model: Claude Haiku + Tavily)
+## 4. Agent crash recovery
 
-`scripts/chaos-agent.sh "<question>"` waits for the first agent step, kills the worker running it, and
-checks that another worker resumes from the Redis checkpoint.
+Measured on the engine's first application, a web research agent, which is no longer in this repository
+(a worker was killed after the first agent step; another worker resumed from the Redis checkpoint, 3 of 3 runs).
+The same drill on the course Q&A agent is in section 9.
 
-| Question | Killed | Resumed | Result | Wall time |
-|---|---|---|---|---|
-| How does Kafka consumer group rebalancing work? | worker-2 | 2 agents on worker-1, from step 2 | COMPLETED | 71 s |
-| What is the difference between Raft and Paxos? | worker-1 | 2 agents on worker-2, from step 2 | COMPLETED | 56 s |
-| How does Redis Cluster shard keys? | worker-2 | 2 agents on worker-1, from step 2 | COMPLETED | 59 s |
+## 5. (removed)
 
-3/3 recovered; completed steps (LLM decisions + tool results) were replayed from the checkpoint, not re-run.
-Most of the wall time is the same 45 s session timeout as in the fault matrix.
-
-## 5. Research quality
-
-See the evaluation table in the README and `eval/results/`.
+The research agent's answer-quality evaluation went with it. The section numbers are kept so that references
+to sections 6 to 13 stay valid.
 
 ## 6. Retrieval quality (BEIR)
 

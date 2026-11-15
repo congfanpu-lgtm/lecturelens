@@ -966,12 +966,12 @@ git push
 先确认不会碰到别的东西：
 
 ```bash
-ssh Upton@100.65.10.56 'ss -ltn | grep -c ":8010 " ; cd ~/project/agentflow-drill && git status --short | wc -l && git rev-parse --abbrev-ref HEAD'
+ssh user@gpu-server 'ss -ltn | grep -c ":8010 " ; cd ~/project/agentflow-drill && git status --short | wc -l && git rev-parse --abbrev-ref HEAD'
 ```
 Expected: 第一行 `0`（端口空闲），第二行 `0`（克隆是干净的），第三行 `main`。任何一项不符就停下来报告，不要自己处理。
 
 ```bash
-ssh Upton@100.65.10.56 '
+ssh user@gpu-server '
 set -e
 mkdir -p ~/.local/bin ~/agentflow-media-data
 [ -x ~/.local/bin/uv ] || cp ~/spike-asr-workers/bin/uv ~/.local/bin/uv
@@ -986,7 +986,7 @@ Expected: 最后一行是 `… passed`。
 - [ ] **Step 4: 启动服务**
 
 ```bash
-ssh Upton@100.65.10.56 'cd ~/project/agentflow-drill/agentflow-media && MEDIA_ROOT=$HOME/agentflow-media-data HF_HOME=$HOME/agentflow-media-data/hf setsid nohup ./run.sh > ~/agentflow-media-data/media.log 2>&1 < /dev/null & sleep 4; curl -s http://127.0.0.1:8010/health'
+ssh user@gpu-server 'cd ~/project/agentflow-drill/agentflow-media && MEDIA_ROOT=$HOME/agentflow-media-data HF_HOME=$HOME/agentflow-media-data/hf setsid nohup ./run.sh > ~/agentflow-media-data/media.log 2>&1 < /dev/null & sleep 4; curl -s http://127.0.0.1:8010/health'
 ```
 Expected: `{"status":"ok","asrModel":"large-v3"}`
 
@@ -995,14 +995,14 @@ Expected: `{"status":"ok","asrModel":"large-v3"}`
 从 https://rdi.berkeley.edu/agentic-ai/f25 找到第 1 讲的录像链接（YouTube）。页面上找不到 YouTube 链接就停下来报告。
 
 ```bash
-ssh Upton@100.65.10.56 'cd ~/project/agentflow-drill/agentflow-media && .venv/bin/python smoke.py --base http://127.0.0.1:8010 --url "<第 1 讲的链接>"'
+ssh user@gpu-server 'cd ~/project/agentflow-drill/agentflow-media && .venv/bin/python smoke.py --base http://127.0.0.1:8010 --url "<第 1 讲的链接>"'
 ```
 Expected: 退出码 0；`secondPassAllCached` 为 `true`；`utterances` 大于 100；`realtimeX` 大于 30（设计文档第 10 节测到 95）；`frames` 大于 5。`realtimeX` 低于 30 或 `frames` 为 0 都要停下来查原因（看 `~/agentflow-media-data/media.log`），不要改阈值。
 
 - [ ] **Step 6: 抽查质量**
 
 ```bash
-ssh Upton@100.65.10.56 'curl -s http://127.0.0.1:8010/media/<mediaKey>/transcript | python3 -c "import json,sys; d=json.load(sys.stdin); [print(u[\"startMs\"]//1000, u[\"text\"]) for u in d[\"utterances\"][:15]]"; curl -s http://127.0.0.1:8010/media/<mediaKey>/frames | python3 -c "import json,sys; [print(f[\"tsMs\"]//1000, repr(f[\"text\"][:80])) for f in json.load(sys.stdin)[\"frames\"][:10]]"'
+ssh user@gpu-server 'curl -s http://127.0.0.1:8010/media/<mediaKey>/transcript | python3 -c "import json,sys; d=json.load(sys.stdin); [print(u[\"startMs\"]//1000, u[\"text\"]) for u in d[\"utterances\"][:15]]"; curl -s http://127.0.0.1:8010/media/<mediaKey>/frames | python3 -c "import json,sys; [print(f[\"tsMs\"]//1000, repr(f[\"text\"][:80])) for f in json.load(sys.stdin)[\"frames\"][:10]]"'
 ```
 人工看一眼：转写读得通、时间戳递增；截到的帧是幻灯片上的文字而不是乱码。把看到的问题（比如同一页被截了很多次）记进下一步的文档里，不在本计划里修。
 
@@ -1021,4 +1021,4 @@ git commit -m "docs: 课程录播的转写与截帧实测数据"
 git push
 ```
 
-服务留在服务器上继续跑，计划 2 要用。停掉的办法：`ssh Upton@100.65.10.56 'pkill -f "uvicorn app.main:app --host 127.0.0.1 --port 8010"'`。
+服务留在服务器上继续跑，计划 2 要用。停掉的办法：`ssh user@gpu-server 'pkill -f "uvicorn app.main:app --host 127.0.0.1 --port 8010"'`。

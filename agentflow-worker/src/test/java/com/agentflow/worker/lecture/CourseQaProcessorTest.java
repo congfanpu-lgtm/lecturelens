@@ -64,7 +64,7 @@ class CourseQaProcessorTest {
         when(checkpoint.load(anyString())).thenReturn(List.of());
         when(rag.searchSegments(anyLong(), anyString(), anyInt(), any(), any(), any())).thenReturn(List.of(
                 new SegmentHit("103:speech:750000", 103, 750000, 805000, "speech", "You collect human preferences to train a reward model.", 0.9)));
-        AgentLoop loop = new AgentLoop(gateway, List.of(), checkpoint, mock(TraceEmitter.class), props);
+        AgentLoop loop = new AgentLoop(gateway, checkpoint, mock(TraceEmitter.class), props);
         processor = new CourseQaProcessor(loop, new CourseTools(rag, media));
     }
 

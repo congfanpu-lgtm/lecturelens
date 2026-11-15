@@ -39,7 +39,7 @@ class AgentLoopCoreTest {
 
     private final LlmGateway gateway = mock(LlmGateway.class);
     private final AgentCheckpoint checkpoint = mock(AgentCheckpoint.class);
-    private final FakeTool research = new FakeTool("web_search");   // 研究 agent 的工具,循环里注册着
+    private final FakeTool research = new FakeTool("web_search");   // 不在这次运行的 Profile 里的工具
     private final FakeTool echo = new FakeTool("echo");             // 这次运行自己的工具
     private final AgentRun run = new AgentRun(1L, 2L, "uuid-qa", "what is rlhf", "m");
     private final Profile profile = new Profile("[course-qa] 你在回答一门课的问题", List.of(echo), 4000, 12, false);
@@ -52,7 +52,7 @@ class AgentLoopCoreTest {
         m.setPricePer1kTokens(1.0);
         props.setModels(List.of(m));
         when(checkpoint.load(anyString())).thenReturn(archived);
-        return new AgentLoop(gateway, List.of(research), checkpoint, mock(TraceEmitter.class), props);
+        return new AgentLoop(gateway, checkpoint, mock(TraceEmitter.class), props);
     }
 
     private static ChatResponse call(String id, String tool, String args) {
@@ -85,7 +85,7 @@ class AgentLoopCoreTest {
         assertEquals(1, echo.calls);
         assertEquals("echo says {\"…", out.history().get(0).toolResults().get(0).getContent(),
                 "工具结果按这次运行的上限(12 个字符)截断");
-        assertEquals(0, research.calls, "研究 agent 的工具不在这次运行的工具表里,不能被调用");
+        assertEquals(0, research.calls, "不在这次运行的工具表里的工具不能被调用");
         assertTrue(out.history().get(1).toolResults().get(0).getContent().startsWith("ERROR: 未知工具 web_search"));
 
         ChatRequest first = requests(3).get(0);
@@ -131,21 +131,6 @@ class AgentLoopCoreTest {
         List<ChatRequest> all = requests(AgentLoop.MAX_STEPS + 1);
         assertNull(all.get(AgentLoop.MAX_STEPS).getTools(), "步数用完后的那次请求不带工具");
         assertEquals(AgentLoop.MAX_STEPS, out.history().size());
-    }
-
-    @Test
-    void researchToolsAreOfferedInTheOrderTheyWereRegistered() {
-        LlmModelProperties props = new LlmModelProperties();
-        LlmModelProperties.Model m = new LlmModelProperties.Model();
-        m.setName("m");
-        props.setModels(List.of(m));
-        when(checkpoint.load(anyString())).thenReturn(List.of());
-        List<AgentTool> registered = List.of(new FakeTool("kb_search"), new FakeTool("web_fetch"),
-                new FakeTool("web_search"), new FakeTool("wiki_search"));
-        when(gateway.chat(any())).thenReturn(answer("{\"answer\":\"ok\",\"sources\":[]}"));
-        new AgentLoop(gateway, registered, checkpoint, mock(TraceEmitter.class), props).run(run);
-        assertEquals(List.of("kb_search", "web_fetch", "web_search", "wiki_search"),
-                requests(1).get(0).getTools().stream().map(t -> t.name()).toList());
     }
 
     @Test

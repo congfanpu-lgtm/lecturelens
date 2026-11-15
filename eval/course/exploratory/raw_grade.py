@@ -11,7 +11,7 @@ import os, sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, ".."))          # eval/course
 sys.path.insert(0, os.path.join(HERE, "..", ".."))    # eval
-import score, grade, run_eval  # noqa: E402
+import score, grade, llm  # noqa: E402
 
 p = argparse.ArgumentParser()
 p.add_argument("run_dir")
@@ -19,8 +19,8 @@ p.add_argument("--model", required=True)
 p.add_argument("--env-file", default=os.path.join(HERE, "..", "..", "..", ".env"))
 args = p.parse_args()
 RUN = args.run_dir
-os.environ.update(run_eval.read_env_file(args.env_file))
-judge = run_eval.Judge(args.model)
+os.environ.update(llm.read_env_file(args.env_file))
+judge = llm.Client(args.model)
 ask = lambda s, u: judge.ask(s, u, max_tokens=1000)
 meta, questions, rows = score.load_run(RUN)
 b1 = {r['qid'] for r in rows if r['system'] == 'B1'}

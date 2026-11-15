@@ -6,7 +6,6 @@ import com.agentflow.common.llm.ChatResponse;
 import com.agentflow.common.llm.TokenUsage;
 import com.agentflow.common.llm.ToolCall;
 import com.agentflow.worker.agent.Prompts;
-import com.agentflow.worker.agent.TextUtil;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -26,10 +25,8 @@ import java.util.regex.Pattern;
  * 默认 LLM 后端:确定性输出、不发网络、无需 API key——压测测调度不烧钱(master 设计文档第 149 行)。
  * 网关的限流/路由/记账对 mock 与真实模型完全一致,mock 只是把"发 HTTP"换成"本地确定性返回"。
  *
- * <p>RESEARCH_AGENT 剧本:按系统提示的角色标签({@link Prompts})分流——
- * planner 固定拆 3 个子问题;agent 第 1 步 wiki_search、第 2 步 web_fetch、第 3 步给答案;
- * reflector 固定追问 1 个"最新进展";synthesizer 返回引用 [1] 的报告;
- * briefer(每日股票简报)把第 1 条条目写成一个事件。其余请求保持原有"摘要"行为。
+ * <p>按系统提示的角色标签({@link Prompts})分流:知识点目录、课程问答、判官各有一个剧本;
+ * 其余请求返回"摘要"(LLM_BATCH 用)。
  * {@code llm.mock.delay-ms} 模拟模型耗时,便于在页面上看清每一步、演示中途杀 worker。
  */
 @Component
@@ -40,7 +37,6 @@ public class MockLlmClient implements LlmClient {
     private static final Set<String> STOP = Set.of("what", "which", "does", "with", "from", "that", "this",
             "between", "about", "versus", "when", "where", "there", "their", "have");
 
-    private static final Pattern FIRST_ITEM = Pattern.compile("(?m)^\\[1] (.+)$");
     private static final Pattern HIT_BLOCK = Pattern.compile("(?m)^\\[L(\\d+) (\\S+) (speech|slide)]\\n(.+)$");
     private static final Pattern SEGMENT_LINE = Pattern.compile("(?m)^\\[(\\d+)] \\S+ (.*)$");
 
@@ -59,17 +55,7 @@ public class MockLlmClient implements LlmClient {
         String system = msgs.stream().filter(m -> "system".equals(m.getRole()) && m.getContent() != null)
                 .map(ChatMessage::getContent).findFirst().orElse("");
         ChatResponse resp;
-        if (system.startsWith(Prompts.PLANNER_TAG)) {
-            resp = plan(firstUser(msgs));
-        } else if (system.startsWith(Prompts.AGENT_TAG)) {
-            resp = agentStep(request, msgs);
-        } else if (system.startsWith(Prompts.REFLECTOR_TAG)) {
-            resp = reflect(lastUser(msgs));
-        } else if (system.startsWith(Prompts.SYNTHESIZER_TAG)) {
-            resp = synthesize(lastUser(msgs));
-        } else if (system.startsWith(Prompts.BRIEFER_TAG)) {
-            resp = brief(lastUser(msgs));
-        } else if (system.startsWith(Prompts.CONCEPTS_TAG)) {
+        if (system.startsWith(Prompts.CONCEPTS_TAG)) {
             resp = concepts(lastUser(msgs));
         } else if (system.startsWith(Prompts.COURSE_QA_TAG)) {
             resp = courseQa(request, msgs);
@@ -93,57 +79,6 @@ public class MockLlmClient implements LlmClient {
                 null, null);
     }
 
-    private ChatResponse plan(String question) {
-        ObjectNode out = OM.createObjectNode();
-        out.putArray("subQuestions")
-                .add(question + " — 背景与定义")
-                .add(question + " — 关键取舍")
-                .add(question + " — 实际案例");
-        return new ChatResponse(out.toString(), null, null);
-    }
-
-    private ChatResponse reflect(String user) {
-        String question = user.startsWith("原问题:") ? user.substring(4, Math.max(4, user.indexOf('\n'))) : user;
-        ObjectNode out = OM.createObjectNode().put("reason", "MOCK 审稿:缺少最新进展");
-        out.putArray("gaps").add(question + " — 最新进展");
-        return new ChatResponse(out.toString(), null, null);
-    }
-
-    private ChatResponse agentStep(ChatRequest req, List<ChatMessage> msgs) {
-        String question = firstUser(msgs);
-        List<String> toolOutputs = msgs.stream().filter(m -> "tool".equals(m.getRole()))
-                .map(ChatMessage::getContent).toList();
-        boolean toolsOffered = req.getTools() != null && !req.getTools().isEmpty();
-        if (toolsOffered && toolOutputs.isEmpty()) {
-            return withCall("MOCK 思路:先在 Wikipedia 搜索关键词。",
-                    new ToolCall("call_1", "wiki_search", OM.createObjectNode().put("query", keywords(question)).toString()));
-        }
-        if (toolsOffered && toolOutputs.size() == 1) {
-            String url = TextUtil.urls(toolOutputs.get(0)).stream()
-                    .filter(u -> u.startsWith("http")).findFirst().orElse(null);
-            if (url != null) {
-                return withCall("MOCK 思路:打开第一条结果阅读正文。",
-                        new ToolCall("call_2", "web_fetch", OM.createObjectNode().put("url", url).toString()));
-            }
-        }
-        List<String> urls = toolOutputs.stream().flatMap(o -> TextUtil.urls(o).stream())
-                .distinct().limit(2).toList();
-        ObjectNode ans = OM.createObjectNode().put("answer",
-                "MOCK 结论:关于「" + question + "」,共查阅 " + toolOutputs.size() + " 份工具结果。");
-        ArrayNode src = ans.putArray("sources");
-        for (int i = 0; i < urls.size(); i++) {
-            src.addObject().put("title", "Source " + (i + 1)).put("url", urls.get(i));
-        }
-        return new ChatResponse(ans.toString(), null, null);
-    }
-
-    private ChatResponse synthesize(String user) {
-        boolean hasSource = user.contains("\n[1] ");
-        return new ChatResponse("MOCK 报告:以下综合了各子问题的结论" + (hasSource ? " [1]" : "") + "。\n\n"
-                + "(mock 模式不调用真实模型;配置 LLM_PROVIDER=openai 后这里是真实报告。)", null, null);
-    }
-
-    /** 每日简报剧本:把第 1 条条目当成一个事件,引文就是它的标题(逐字,能通过 BriefProcessor 的核对)。 */
     /** 判官:每条结论都给判定;结论里带 UNSUPPORTED 的判为不支持(演练核验的第 3 层),其余支持。 */
     private ChatResponse judge(String user) {
         ObjectNode out = OM.createObjectNode();
@@ -219,19 +154,6 @@ public class MockLlmClient implements LlmClient {
         return new ChatResponse(out.toString(), null, null);
     }
 
-    private ChatResponse brief(String user) {
-        ObjectNode out = OM.createObjectNode();
-        ArrayNode events = out.putArray("events");
-        Matcher first = FIRST_ITEM.matcher(user);
-        if (first.find()) {
-            String title = first.group(1).trim();
-            events.addObject().put("title", "MOCK 事件:" + TextUtil.truncate(title, 20))
-                    .put("summary", "MOCK 摘要(mock 模式不调用真实模型):" + title)
-                    .put("importance", 2).put("source", 1).put("quote", title);
-        }
-        return new ChatResponse(out.toString(), null, null);
-    }
-
     /**
      * 剧本里的"模型"会提炼搜索关键词:整句问题直接丢给 Wikipedia 全文搜索几乎搜不到结果。
      * 优先取句中首字母大写的专有名词(Kafka、RabbitMQ),否则取前 3 个非停用词。
@@ -253,11 +175,6 @@ public class MockLlmClient implements LlmClient {
         ChatResponse r = new ChatResponse(thought, null, null);
         r.setToolCalls(List.of(call));
         return r;
-    }
-
-    private static String firstUser(List<ChatMessage> msgs) {
-        return msgs.stream().filter(m -> "user".equals(m.getRole()) && m.getContent() != null)
-                .map(ChatMessage::getContent).findFirst().orElse("");
     }
 
     private static String lastUser(List<ChatMessage> msgs) {

@@ -7,11 +7,9 @@ import com.agentflow.worker.llm.LlmGateway;
 import com.agentflow.worker.llm.LlmModelProperties;
 import com.agentflow.worker.trace.TraceEmitter;
 import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
-import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -49,7 +47,13 @@ class AgentLoopTest {
         m.setPricePer1kTokens(1.0);
         props.setModels(List.of(m));
         when(checkpoint.load(anyString())).thenReturn(List.of());
-        return new AgentLoop(gateway, List.of(tool), checkpoint, trace, props);
+        return new AgentLoop(gateway, checkpoint, trace, props);
+    }
+
+    /** 循环只认调用方给的 Profile:这里是一个工具、宽松模式(工具出错给模型看)。 */
+    private void go(AgentLoop loop) {
+        loop.converse(run, new AgentLoop.Profile("p", List.of(tool), 1600, 2000, false),
+                List.of(new ChatMessage("user", run.question())));
     }
 
     private static ChatResponse call(String id, String args) {
@@ -75,103 +79,12 @@ class AgentLoopTest {
     }
 
     @Test
-    void searchesThenAnswersWithVerifiedSource() {
-        AgentLoop loop = loop();
-        when(gateway.chat(any())).thenReturn(
-                call("c1", "{\"q\":\"kafka\"}"),
-                answer("{\"answer\":\"Kafka 是分布式日志\",\"sources\":[{\"title\":\"Kafka\","
-                        + "\"url\":\"https://en.wikipedia.org/wiki/Apache_Kafka\"}]}"));
-
-        ObjectNode out = loop.run(run);
-
-        assertEquals("Kafka 是分布式日志", out.get("answer").asText());
-        assertEquals("https://en.wikipedia.org/wiki/Apache_Kafka", out.at("/sources/0/url").asText());
-        assertEquals(2, out.at("/usage/calls").asInt());
-        assertEquals(2, out.get("steps").asInt());
-        assertEquals(1, tool.calls);
-        verify(checkpoint, times(1)).append(eq("uuid-1"), argThat(s -> s.step() == 1));
-        List<ChatRequest> reqs = requests(2);
-        assertEquals("search", reqs.get(0).getTools().get(0).name());
-        assertTrue(reqs.get(0).getMessages().get(0).getContent().contains("Today is " + java.time.LocalDate.now(java.time.ZoneOffset.UTC).toString()));
-                assertTrue(reqs.get(0).getMessages().get(0).getContent().endsWith(Prompts.ENGLISH));
-        assertEquals("tool", reqs.get(1).getMessages().get(3).getRole());
-        assertEquals("c1", reqs.get(1).getMessages().get(3).getToolCallId());
-        assertTrue(detailsOf(TraceStage.AGENT_STEP).get(0).contains("\"tool\":\"search\""));
-    }
-
-    @Test
-    void fabricatedCitationIsDroppedAndTraced() {
-        AgentLoop loop = loop();
-        when(gateway.chat(any())).thenReturn(call("c1", "{}"),
-                answer("{\"answer\":\"a\",\"sources\":[{\"title\":\"x\",\"url\":\"https://made.up/page\"}]}"));
-
-        ObjectNode out = loop.run(run);
-
-        assertEquals(0, out.get("sources").size());
-        assertTrue(detailsOf(TraceStage.CITATION_DROPPED).get(0).contains("https://made.up/page"));
-    }
-
-    @Test
-    void quoteKeptOnlyWhenItReallyAppearsInToolOutput() {
-        // 评测里引用准确率只有 56%:写报告的模型没读过原文。让 agent 交来源时附原文摘录,
-        // 摘录必须真的出现在工具结果里(忽略大小写 / 空白差异),编的摘录去掉,来源本身仍保留
-        tool.output = "Title: Kafka\nURL: https://en.wikipedia.org/wiki/Apache_Kafka\n"
-                + "Summary: Apache   Kafka is a distributed EVENT store\u2019s log.";
-        AgentLoop loop = loop();
-        when(gateway.chat(any())).thenReturn(
-                call("c1", "{\"q\":\"kafka\"}"),
-                answer("{\"answer\":\"a\",\"sources\":["
-                        + "{\"title\":\"K\",\"url\":\"https://en.wikipedia.org/wiki/Apache_Kafka\","
-                        + "\"quote\":\"Apache Kafka is a distributed event store's log.\"},"
-                        + "{\"title\":\"K\",\"url\":\"https://en.wikipedia.org/wiki/Apache_Kafka\","
-                        + "\"quote\":\"Kafka was invented at NASA.\"}]}"));
-
-        ObjectNode out = loop.run(run);
-
-        assertEquals("Apache Kafka is a distributed event store's log.", out.at("/sources/0/quote").asText());
-        assertFalse(out.at("/sources/1").has("quote"), "工具结果里没有的摘录要去掉:" + out);
-        assertEquals("https://en.wikipedia.org/wiki/Apache_Kafka", out.at("/sources/1/url").asText());
-        assertEquals(1, out.get("unverifiedQuotes").asInt());
-    }
-
-    @Test
-    void quoteMustComeFromTheCitedSourceAndBeSubstantial() {
-        // 审查发现:只核对"出现在某个工具结果里",把 A 的原话挂到 B 的 URL 上也能通过;"the" 这种摘录也能通过
-        tool.output = "Title: Kafka\nURL: https://a.example/kafka\nSnippet: Kafka stores records in an append-only log.\n\n"
-                + "Title: Rabbit\nURL: https://b.example/rabbit\nSnippet: RabbitMQ routes messages through exchanges.";
-        AgentLoop loop = loop();
-        when(gateway.chat(any())).thenReturn(
-                call("c1", "{\"q\":\"mq\"}"),
-                answer("{\"answer\":\"a\",\"sources\":["
-                        + "{\"title\":\"R\",\"url\":\"https://b.example/rabbit\",\"quote\":\"Kafka stores records in an append-only log.\"},"
-                        + "{\"title\":\"K\",\"url\":\"https://a.example/kafka\",\"quote\":\"Kafka\"},"
-                        + "{\"title\":\"K\",\"url\":\"https://a.example/kafka\",\"quote\":\"Kafka stores records in an append-only log.\"}]}"));
-
-        ObjectNode out = loop.run(run);
-
-        assertFalse(out.at("/sources/0").has("quote"), "别的来源的原话不能算作这个来源的证据");
-        assertFalse(out.at("/sources/1").has("quote"), "太短的摘录不算证据");
-        assertEquals("Kafka stores records in an append-only log.", out.at("/sources/2/quote").asText());
-        assertEquals(2, out.get("unverifiedQuotes").asInt());
-    }
-
-    @Test
-    void answerBudgetLeavesRoomForSourcesWithQuotes() {
-        // 评测发现:800 token 时模型"先写一段说明再给 JSON",JSON 被截断 → 解析失败 → 来源全丢
-        // (v2 有 20/80、加摘录后 53/77 个 agent 没有来源)
-        AgentLoop loop = loop();
-        when(gateway.chat(any())).thenReturn(answer("{\"answer\":\"a\",\"sources\":[]}"));
-        loop.run(run);
-        assertTrue(requests(1).get(0).getMaxTokens() >= 1500, "agent 每步输出上限太小");
-    }
-
-    @Test
     void toolErrorIsReturnedToModelInsteadOfThrowing() {
         AgentLoop loop = loop();
         tool.fail = new IllegalStateException("boom");
         when(gateway.chat(any())).thenReturn(call("c1", "{}"), answer("{\"answer\":\"a\",\"sources\":[]}"));
 
-        loop.run(run);
+        go(loop);
 
         String toolMsg = requests(2).get(1).getMessages().get(3).getContent();
         assertTrue(toolMsg.startsWith("ERROR: "));
@@ -183,7 +96,7 @@ class AgentLoopTest {
         AgentLoop loop = loop();
         when(gateway.chat(any())).thenReturn(call("c1", "{not json"), answer("{\"answer\":\"a\",\"sources\":[]}"));
 
-        loop.run(run);
+        go(loop);
 
         assertEquals(0, tool.calls);
         assertTrue(requests(2).get(1).getMessages().get(3).getContent().startsWith("ERROR: "));
@@ -196,7 +109,7 @@ class AgentLoopTest {
         bad.setToolCalls(List.of(new ToolCall("c1", "rm_rf", "{}")));
         when(gateway.chat(any())).thenReturn(bad, answer("{\"answer\":\"a\",\"sources\":[]}"));
 
-        loop.run(run);
+        go(loop);
 
         assertTrue(requests(2).get(1).getMessages().get(3).getContent().contains("未知工具 rm_rf"));
     }
@@ -207,67 +120,9 @@ class AgentLoopTest {
         when(gateway.chat(any())).thenReturn(call("c1", "{\"q\":\"k\"}"), call("c2", "{\"q\":\"k\"}"),
                 answer("{\"answer\":\"a\",\"sources\":[]}"));
 
-        loop.run(run);
+        go(loop);
 
         assertEquals(1, tool.calls);
     }
 
-    @Test
-    void stepLimitForcesAnswerWithoutTools() {
-        AgentLoop loop = loop();
-        List<ChatResponse> script = new ArrayList<>();
-        for (int i = 1; i <= AgentLoop.MAX_STEPS; i++) {
-            script.add(call("c" + i, "{\"q\":\"" + i + "\"}"));
-        }
-        script.add(answer("{\"answer\":\"forced\",\"sources\":[]}"));
-        when(gateway.chat(any())).thenReturn(script.get(0), script.subList(1, script.size()).toArray(new ChatResponse[0]));
-
-        ObjectNode out = loop.run(run);
-
-        assertEquals("forced", out.get("answer").asText());
-        List<ChatRequest> reqs = requests(AgentLoop.MAX_STEPS + 1);
-        assertNull(reqs.get(AgentLoop.MAX_STEPS).getTools());
-        assertEquals(Prompts.FORCE_ANSWER, reqs.get(AgentLoop.MAX_STEPS).getMessages()
-                .get(reqs.get(AgentLoop.MAX_STEPS).getMessages().size() - 1).getContent());
-    }
-
-    @Test
-    void resumesFromCheckpointWithoutRerunningTools() {
-        AgentLoop loop = loop();
-        List<AgentStep> saved = new ArrayList<>();
-        for (int n = 1; n <= 2; n++) {
-            ChatMessage a = ChatMessage.assistant("t" + n, List.of(new ToolCall("c" + n, "search", "{\"q\":\"" + n + "\"}")));
-            saved.add(new AgentStep(n, a, List.of(ChatMessage.tool("c" + n, "URL: https://ex.com/" + n)), new Usage()));
-        }
-        when(checkpoint.load("uuid-1")).thenReturn(saved);
-        when(gateway.chat(any())).thenReturn(
-                answer("{\"answer\":\"done\",\"sources\":[{\"title\":\"e\",\"url\":\"https://ex.com/2\"}]}"));
-
-        ObjectNode out = loop.run(run);
-
-        assertEquals(0, tool.calls);
-        assertEquals(6, requests(1).get(0).getMessages().size());   // system + user + 2×(assistant + tool)
-        assertEquals("https://ex.com/2", out.at("/sources/0/url").asText());
-        assertEquals(3, out.get("steps").asInt());
-        assertTrue(detailsOf(TraceStage.RESUMED).get(0).contains("\"fromStep\":2"));
-    }
-
-    @Test
-    void finalAnswerInProseFallsBack() {
-        AgentLoop loop = loop();
-        when(gateway.chat(any())).thenReturn(answer("Kafka is a distributed log."));
-
-        ObjectNode out = loop.run(run);
-
-        assertEquals("Kafka is a distributed log.", out.get("answer").asText());
-        assertEquals(0, out.get("sources").size());
-    }
-
-    @Test
-    void finalAnswerInsideJsonFenceIsParsed() {
-        AgentLoop loop = loop();
-        when(gateway.chat(any())).thenReturn(answer("```json\n{\"answer\":\"ok\",\"sources\":[]}\n```"));
-
-        assertEquals("ok", loop.run(run).get("answer").asText());
-    }
 }

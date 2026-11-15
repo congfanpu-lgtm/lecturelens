@@ -30,7 +30,9 @@ jobs:
       - run: pip install -r agentflow-rag/requirements.txt
       - run: cd agentflow-rag && pytest -q
       - name: Eval harness self-check
-        run: python3 eval/run_eval.py --self-check && python3 eval/frames_eval.py --self-check && python3 scripts/fault_matrix.py --self-check
+        run: |
+          python3 scripts/fault_matrix.py --self-check
+          for t in questions run score grade calibrate draft transcript_check; do python3 eval/course/$t.py --self-check; done
 
   media:
     runs-on: ubuntu-latest

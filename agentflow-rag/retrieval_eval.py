@@ -24,7 +24,7 @@ from app.rank import B, BM25, CANDIDATES, K1, RRF_K, rrf
 
 BEIR_URL = "https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/{}.zip"
 CACHE = Path.home() / ".cache" / "agentflow" / "beir"
-METRICS = ("ndcg@10", "recall@3", "recall@10")   # kb_search 默认给 agent top-3;10 是 BEIR 的标准截断
+METRICS = ("ndcg@10", "recall@3", "recall@10")   # 3 是给模型看的前几条;10 是 BEIR 的标准截断
 
 
 def ndcg(ranked: list[str], rel: dict[str, int], k: int = 10) -> float:

@@ -76,7 +76,7 @@ flowchart LR
 | 在同一台机器上加识别副本 | 没有用:1 个 2.6 张/秒,4 个 4.1 张/秒,不起副本 4.0 张/秒。这台机器的识别吞吐有上限(最可能是内存带宽);换到多台机器上的效果没有测过 |
 | 回答到一半杀掉 worker | 另一个 worker 从存档的那一步续跑,检索不重跑,51 秒后答完(模拟模型和模拟判官) |
 | 三讲同时加入,各讲幻灯片读完的时间(转写改走独立队列前后) | 223 / 320 / 342 秒 → 53 / 191 / 299 秒;三讲全部可检索的时间不变(约 340 秒,卡在一张显卡的排队上) |
-| 测试 | Java 410 个、检索服务 44 个、媒体服务 110 个 |
+| 测试 | Java 298 个、检索服务 44 个、媒体服务 110 个 |
 
 问答评测(Claude Haiku,89 道由模型出的题;三轮共 2,196 次问答,详见 benchmarks 第 12、13 节):
 
@@ -123,43 +123,21 @@ flowchart LR
 
 ---
 
-# 底层:任务编排引擎(AgentFlow)
+# 底层:任务编排引擎
 
-LectureLens 建在一个自己写的分布式任务编排引擎上。下面是引擎本身的说明:
-多阶段任务、失败恢复、限流、可续跑的 ReAct agent、故障演练和压测。它最早的用途是下面这个研究 agent。
+LectureLens 建在一个自己写的分布式任务编排引擎上(代码模块名还是 `agentflow-*`)。下面是引擎本身的说明:
+多阶段任务、失败恢复、限流、可续跑的 ReAct agent、故障演练和压测。
 
-## 研究 Agent(RESEARCH_AGENT)
-
-输入一个问题 → 规划 LLM 拆成子问题 → 每个子问题由一个 ReAct agent 在 Kafka worker 池上并行调研
-(原生 tool calling:网页搜索、Wikipedia、网页抓取、本地知识库)→ 合成 LLM 写出带引用的报告。
-中途杀掉一个 worker,agent 会被另一个 worker 接手,**从最后存档的那一步继续,已调用过的工具不重跑**。
-
-![AgentFlow 演示:运行中途杀掉 worker,agent 在另一个 worker 上续跑](docs/img/demo.gif)
-
-    cp .env.example .env                 # 默认 mock(不需要 key、不花钱);填 LLM_PROVIDER=openai + key 即真实模型
-    docker compose up -d --build --wait  # 9 个服务一条命令起齐
-    open http://localhost:8080           # 点一个示例问题
-    scripts/chaos-agent.sh               # 中途杀 worker,看 agent 续跑
-
-| 阶段 | 子任务数 | 做什么 |
-|---|---|---|
-| ① 拆题 | 1 | 先分流:说明类问题由 LLM 拆成 2~4 个子问题(schema 校验);答案类问题(要一个具体事实,往往要连查几环)不拆 |
-| ② Agents | N,并行 | ReAct 循环,最多 10 步;每步存档到 Redis;工具全部只读 |
-| ③ 合成 | 1 | LLM 写报告;引用只能来自工具真实返回过的 URL |
-
-卖点:
 - **可续跑的 ReAct agent**:每一步存档到 Redis(key = 子任务 UUID);重新投递(worker 崩溃、重试、超时兜底)时
-  回放已完成步骤后继续,工具不重复调用。at-least-once 投递 + 只读工具 ⇒ 效果上等价 exactly-once。
-- **多阶段编排**:plan → map → reduce 复用同一套子任务状态机;下一阶段在"落定最后一个结果"的同一事务里创建
-  (task 计数行锁 ⇒ 只创建一次),事务提交后再分发。
-- **按问题类型分流**:在多跳问题(FRAMES,每题要用到 2~15 篇 Wikipedia 文章)上,原来"一次拆完、并行查"的做法
-  比同一个模型不给工具还差(13/30 对 16/30)——后面的 agent 不知道前面查到了什么。改成先分流、答案类问题不拆之后:
-  调参用的 30 题 13 → 19,没见过的 30 题 12 → 17,每题 token 反而略降。多轮追问也测过,只救回 9 题里的 1 题、
-  token 翻倍,所以默认关闭(`payload.rounds` 可开)。数据与局限见 [`eval/results/frames.md`](eval/results/frames.md)。
-- **agent 防护**:`web_fetch` 防 SSRF(拒绝回环/私网/链路本地/CGNAT,每次重定向都重新校验);工具出错回传给模型
-  而不是崩溃;重复调用走缓存;编造的引用被删除并记入 trace。
+  回放已完成步骤后继续,工具不重复调用。课程问答用的就是它,回答到一半杀掉 worker 的演练见上面的实测表。
+- **多阶段编排**:一讲课的摄入(导入 → 转写 ∥ 挑帧、识别 → 建索引 → 知识点目录)和问答(作答 → 核验 → 补一轮)
+  复用同一套子任务状态机;下一阶段在"落定最后一个结果"的同一事务里创建(task 计数行锁 ⇒ 只创建一次),事务提交后再分发。
+- **agent 防护**:工具参数写错时把错误回传给模型而不是崩溃;工具背后的服务出故障时整步失败、交给重试
+  (否则模型会把"检索失败"当成"课里没讲");重复调用走缓存;每条结论的时间和引文由代码核对。
 
 > ⚠️ 没有鉴权:只在本机 / 内网使用;对公网开放前必须先加鉴权,尤其是配置了真实 LLM key 时。
+> `DEMO_ACCESS_CODE` 可以把首页以外的所有请求锁在一个访问码后面(同时禁用通用任务提交和死信重放),
+> 但课程接口没有按来源的配额和每日预算。
 
 ## 架构(当前骨架)
 
@@ -182,29 +160,10 @@ LectureLens 建在一个自己写的分布式任务编排引擎上。下面是�
 
 查询:`GET /api/v1/tasks/{taskUuid}`
 
-**Web 控制台**:server 起来后浏览器打开 `http://localhost:8080/`——单文件看板(原生 JS,零依赖,
-server `static/` 直供):提交任务(ECHO/LLM/RESEARCH)、实时进度条、Run Trace 执行轨迹时间线、
-LLM token 记账,轮询刷新。用于 demo 演示。
+任务类型:`LECTURE_INGEST`、`COURSE_QA`、`COURSE_VERIFY`(课程录播);`ECHO_BATCH`(压测和故障演练用)、
+`LLM_BATCH`(经网关批量调模型)、`RESEARCH_BATCH`(先判断要不要检索、再摘要的演示)。
 
-## 每日股票简报(/app.html)
-
-面向个人投资者的页面:server 起来后打开 `http://localhost:8080/app.html`。
-
-- 注册登录 → 添加美股代码(最多 20 只)→ 页面显示这些股票最近 7 天的新动态,每条都带原文链接。
-- 可选:填 Slack 或飞书机器人的 webhook 地址和推送时间,每天到点把新内容推过去;同一条内容对同一个人只推一次。
-- 简报每天生成两次(纽约时间 07:00、18:00);新关注的股票会立刻单独整理一次。
-- 背后是 `DAILY_BRIEF` 任务:每只被关注的股票一个子任务,同一只股票只处理一次,结果给所有关注它的用户。
-- `.env` 里填 `SEC_USER_AGENT`(格式「名字 邮箱」,SEC 的要求)后才会读 SEC 公告并校验股票代码;不填只用新闻搜索。
-- 老数据库升级:执行一次 `docker/mysql/migrations/2026-11-09-stock-brief.sql`。
-- 只整理公开信息,不给买卖建议。
-- 对公网开放前:**必须设置 `DEMO_ACCESS_CODE`**(否则 `/api/v1/tasks` 等引擎接口谁都能调),https 下设 `AUTH_COOKIE_SECURE=true`;
-  建议填 `TAVILY_API_KEY`——不填时新闻搜索走 DuckDuckGo,股票一多很容易被限流,没配 SEC 的话那只股票当次就没有简报。
-- 简报的模型花费和演示控制台记在同一个每日预算里(`DEMO_DAILY_BUDGET_USD`):超了只会让控制台暂停接新任务,简报本身按数量封顶
-  (每次最多 `max-tickers` 只,每天两次,外加 `max-on-demand` 次)。接真实模型时按需调大预算。
-
-可调参数(server):`agentflow.brief.cron` / `agentflow.brief.zone`(生成时间)、`agentflow.brief.max-tickers`(每次最多处理多少只,默认 100)、
-`agentflow.brief.max-on-demand`(每天最多多少次「新关注立刻整理」,默认 300)、`agentflow.public-base-url`(推送里的页面链接)。
-产品设计见 [`docs/product-framework.md`](docs/product-framework.md)。
+老数据库升级:依次执行 `docker/mysql/migrations/` 里的 `2026-10-15-subtask-kind.sql` 和 `2026-11-13-course-video.sql`。
 
 ## 多 Worker 水平扩展
 
@@ -411,9 +370,6 @@ server 和 worker 在容器里,要访问宿主机上的媒体服务,所以媒体
 - [x] W7 RAG 检索服务(Python/FastAPI + pgvector,确定性 embedding + Recall@K)+ 意图驱动检索 + 多角色处理器
 - [x] 真实检索:BM25 + 本地 embedding 模型混合检索(RRF),在 BEIR 上评测并与公开基线核对
 - [x] W8 压测与容错演练:7 项指标实测(见"压测与指标",水平扩展 2.77×、零丢失、trace 100%)
-
-## 录制 demo GIF
-1. `docker compose up -d --build --wait`,浏览器打开 http://localhost:8080 并缩放到 1280×800;
-2. 用 Kap / LICEcap 开始录屏,点第一个示例问题;
-3. 等第一个 agent 出现 🔧 后,在终端执行 `scripts/chaos-agent.sh`(或 `docker kill agentflow-worker-1`);
-4. 录到页面出现「⚡ … resumed from step N」与最终报告,保存为 `docs/img/demo.gif`(< 8MB)。
+- [x] 课程录播:摄入、检索、问答与核验、三轮真实模型评测(见本页上半部分和 `docs/benchmarks.md` 第 7 到 13 节)
+- [ ] 第二版(播放列表和 B 站、课程知识点地图、看画面的证据、多负载隔离、长期运行的实例、原生 Anthropic 客户端):
+  见设计文档;没解决的问题记在 `docs/open-problems.md`

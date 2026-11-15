@@ -54,7 +54,7 @@ public class TaskFinalizer {
         List<SubtaskEntity> subs = subtaskMapper.selectList(
                 new QueryWrapper<SubtaskEntity>()
                         .eq("task_id", task.getId()).orderByAsc("seq"));
-        // 多阶段任务类型可按业务语义改判(如 RESEARCH_AGENT:没有报告就是失败)
+        // 多阶段任务类型可按业务语义改判(如 COURSE_QA:核验做完过一次就算部分完成)
         for (TaskDecomposer d : decomposers) {
             if (Objects.equals(d.type(), task.getType())) {
                 terminal = d.terminalStatus(task, subs, terminal);

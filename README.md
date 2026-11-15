@@ -73,58 +73,15 @@ How to run it, the design and the limits are in the [Chinese README](README.zh.m
 
 ---
 
-# The engine underneath (AgentFlow)
+# The engine underneath
 
-LectureLens is built on a task-orchestration engine that was written earlier and first used by a research
-agent. The rest of this page describes the engine: multi-stage tasks, failure recovery, rate limiting, a
-resumable ReAct agent, fault drills and load tests.
+LectureLens runs on a task-orchestration engine written before it (its code modules are still called
+`agentflow-*`). The rest of this page describes the engine: multi-stage tasks, failure recovery, rate limiting,
+a resumable ReAct agent, fault drills and load tests.
 
-**A crash-tolerant multi-agent research system on a Kafka worker pool.** Ask a question → a planner LLM splits it
-into sub-questions → each sub-question is researched in parallel by a ReAct agent (native tool calling:
-web search, Wikipedia, web fetch, local RAG) → a final LLM writes a report with verified citations.
-Kill a worker mid-run and the agent resumes on another worker **from its last checkpointed step, without
-re-running tools**.
-
-![AgentFlow demo: a worker is killed mid-run and its agents resume on another worker](docs/img/demo.gif)
-
-```bash
-cp .env.example .env          # default: mock LLM (no key, no cost). Set LLM_PROVIDER=openai + key for a real model
-docker compose up -d --build --wait
-open http://localhost:8080    # click an example question
-scripts/chaos-agent.sh        # kill a worker mid-run, watch the agent resume
-```
-
-```mermaid
-flowchart LR
-  UI[Console] -->|RESEARCH_AGENT| S[Server<br/>CAS state machine]
-  S -->|PLAN| K[(Kafka)]
-  K --> W1[Worker 1] & W2[Worker 2]
-  W1 & W2 -->|result| S
-  S -->|N × AGENT| K
-  S -->|SYNTHESIZE| K
-  W1 & W2 <-->|checkpoint per step| R[(Redis)]
-  W1 & W2 -->|LLM via gateway<br/>rate limit + token accounting| L[LLM API]
-  W1 & W2 -->|trace| T[(MongoDB)]
-```
-
-**How a research task runs**
-
-| Stage | Subtasks | What happens |
-|---|---|---|
-| ① Plan | 1 | Routes first: a *report* question is split into 2–4 sub-questions (schema-validated); an *answer* question (one specific fact, usually multi-hop) is kept whole |
-| ② Agents | N, in parallel | ReAct loop, max 10 steps; each step checkpointed to Redis; tools are read-only |
-| ③ Synthesize | 1 | LLM writes the report; citations limited to URLs tools actually returned |
-
-Every stage is an ordinary Kafka subtask, so it inherits the existing reliability layer: staged retries
-(5s/30s/5m) → DLQ with replay, timeout sweep, idempotency guard, partial-failure semantics, full run trace.
-
-> ⚠️ No authentication. Keep it on localhost / a private network; add auth before exposing it publicly,
-> especially with a real LLM key configured.
-
-Positioning keywords: **controllable · operable · observable/traceable · recoverable · idempotent**
-— an *infra for controllable, operable workflow agents*, not an autonomous black box.
-
----
+> ⚠️ No authentication. Keep it on localhost or a private network. `DEMO_ACCESS_CODE` puts everything except
+> the home page behind one access code (and disables the generic task API and DLQ replay), but the course
+> endpoints have no per-client quota or daily budget.
 
 ## Architecture
 
@@ -140,13 +97,13 @@ flowchart LR
     coord -->|dispatch| kafka[["Kafka<br/>subtask + staged-retry/DLQ"]]
     kafka --> worker
     subgraph worker["Worker pool ×N (Runtime)"]
-        proc[SubtaskProcessor<br/>Echo / LLM / Research]
+        proc[SubtaskProcessor<br/>lecture ingest · course Q&A · LLM batch]
         gw[LLM Gateway<br/>Redis+Lua token bucket · routing · accounting]
         ctx[AgentContext<br/>context trimming]
         proc --> ctx --> gw
     end
     gw --> llm[LLM API<br/>mock / OpenAI-compatible]
-    proc -->|intent-gated| rag[RAG service<br/>Python/FastAPI + pgvector]
+    proc -->|search| rag[Retrieval service<br/>Python/FastAPI + pgvector + BM25]
     proc -->|result| coord
     coord & proc -->|trace events| mongo[("MongoDB<br/>Run Trace")]
     gw --> redis[("Redis<br/>rate-limit · idempotency · accounting")]
@@ -159,36 +116,32 @@ MongoDB (nested-JSON execution traces) · pgvector (ANN vector search).
 
 ---
 
-## Self-built core (résumé highlights)
+## Self-built core
 
-- **Resumable ReAct agents** — native OpenAI tool calling; per-step checkpoint in Redis keyed by subtask UUID;
-  on redelivery (worker crash, retry, timeout sweep) the agent replays saved steps and continues — tools are never re-run.
-  At-least-once delivery + read-only tools ⇒ effectively exactly-once tool side effects.
-- **Multi-stage orchestration** — plan → map → reduce built on the same subtask state machine; the next stage is
-  created in the same DB transaction that settles the last result (row lock on the task counter ⇒ created exactly once),
-  dispatched after commit.
-- **Agent guardrails** — SSRF guard on `web_fetch` (blocks loopback/private/link-local/CGNAT, re-checked on every redirect);
-  tool errors fed back to the model instead of crashing; duplicate-call cache; fabricated citations dropped and traced.
+- **Resumable ReAct agent** — native tool calling; a checkpoint in Redis after every step, keyed by the subtask
+  UUID. On redelivery (worker crash, retry, timeout sweep) the agent replays the saved steps and continues;
+  tools are not run again. The course Q&A agent is built on it.
+- **Multi-stage orchestration** — lecture ingest (import → transcription ∥ frames and OCR → index → concept
+  directory) and Q&A (answer → verify → one repair round) run on the same subtask state machine. The next
+  stage is created in the same DB transaction that settles the last result (row lock on the task ⇒ created
+  exactly once) and dispatched after commit.
+- **Agent guardrails** — a wrong tool argument is shown to the model instead of crashing the run; a failure of
+  the service behind a tool fails the step and goes to retry (otherwise the model reads "search failed" as
+  "not in the course"); identical calls are served from a cache.
 
-1. **Coordinator + state machine** — DAG decomposition, **partial-failure semantics**
-   (`PARTIAL_FAILED`), DB compare-and-swap transitions, timeout sweeper.
+1. **Coordinator + state machine** — decomposition, **partial-failure semantics** (`PARTIAL_FAILED`),
+   DB compare-and-swap transitions, timeout sweeper.
 2. **Kafka reliability layer** — self-built **staged delay-retry topics (5s/30s/5m) + DLQ + replay**
-   (Kafka has no native delay/DLQ; built on top, comparable to RocketMQ semantics).
-3. **Cost-aware LLM gateway** — **Redis + Lua token-bucket** rate limiting (atomic, shared across
-   workers), multi-model routing, token accounting — the single choke-point for all LLM calls.
-4. **Run Trace** — event-sourced through Kafka → MongoDB; full lifecycle is auditable/replayable
-   to prove a task closed the loop (`SUBMITTED → … → TASK_FINALIZED`).
-5. **Unified side-effect Policy** — every side-effect goes through one gate with business-level
-   idempotency, fired `afterCommit`; enforced structurally in code, not by prompt.
-
-Plus **AgentContext** (token-budget context trimming to prevent context bloat), **dynamic Skill
-registry** (Spring-collected, schema-constrained output so the model can't free-wheel, multi-hit
-priority ordering), and an **intent-driven RAG tool** (retrieve only when intent warrants it; hybrid
-BM25 + a local embedding model, fused with reciprocal rank fusion — see *Retrieval evaluation*).
+   (Kafka has no native delay or DLQ).
+3. **Cost-aware LLM gateway** — **Redis + Lua token-bucket** rate limiting (atomic, shared across workers),
+   multi-model routing, token accounting; the single exit for all model calls.
+4. **Run Trace** — events through Kafka into MongoDB; the full lifecycle of a task can be audited and replayed.
+5. **Unified side-effect policy** — every side effect goes through one gate with business-level idempotency,
+   fired after commit.
 
 ---
 
-## Measured metrics
+## Measured metrics of the engine
 
 Environment: Apple M5 (10 cores) · JDK 21 · all middleware in Docker · **mock LLM** (load-testing
 the scheduler, not the model — free & deterministic). Reproduce: `scripts/load_test.py`.
@@ -202,7 +155,6 @@ the scheduler, not the model — free & deterministic). Reproduce: `scripts/load
 | Horizontal scaling 1→3 workers | 3.1 → 8.6 subtasks/s = **2.77×** (single-machine resource bound, not architectural) |
 | Cost control (idempotency) | crash scenario: **27.3%** of redeliveries intercepted (no duplicate LLM calls) |
 | Fault tolerance | `kill -9` each of worker / server / Kafka / MySQL / Redis / MongoDB under load, 30 s outage: **every accepted task COMPLETED, 0 subtasks run twice**. Minutes-long Redis and MySQL outages: 120/120 and 21/21 (before the fixes: 24 messages dropped, 5 tasks stuck, 1 task falsely `PARTIAL_FAILED`). `scripts/fault_matrix.py`, details in [docs/benchmarks.md](docs/benchmarks.md) |
-| Agent crash recovery (real Claude) | kill the worker mid-agent, 3 runs → **3/3 COMPLETED**, all 6 in-flight agents resumed from step 2 on the other worker, finished steps not re-run (`scripts/chaos-agent.sh`) |
 | Retrieval quality (BEIR, nDCG@10) | SciFact **0.21 → 0.73**, NFCorpus **0.07 → 0.37** (hash embedding → hybrid BM25 + bge-small; see *Retrieval evaluation*) |
 | Side-effect idempotency | 85 finalized tasks → **85 notifications, 0 duplicates** |
 | Observability | Run Trace completeness **100%** |
@@ -212,54 +164,9 @@ the scheduler, not the model — free & deterministic). Reproduce: `scripts/load
 
 ---
 
-## Research-agent evaluation
-
-`eval/run_eval.py` runs 20 fixed questions (EN + ZH; current events, systems, comparisons, ML concepts)
-through the real stack and scores the reports. A judge model (Claude Sonnet) grades each question's
-required aspects 0/1/2, and **checks citations against the cited page itself**: it samples cited sentences,
-fetches the source URL, and asks whether that page supports the sentence. Model under test: Claude Haiku.
-Full per-question tables: [`eval/results/`](eval/results/).
-
-| Run | What changed | Citation accuracy (strict / lenient) | Depth | Agents with no sources | Cost / question | p50 |
-|---|---|---|---|---|---|---|
-| v2-noreflect | baseline (after language + Wikipedia 429 fixes) | 54% / 86% | 95% | 25% | $0.039 | 21s |
-| v2-reflect | + review stage with up to 2 follow-up agents | 47% / 82% | 95% | 40% | $0.072 | 39s |
-| v3-evidence-1600tok | + evidence quotes verified against tool output; larger answer budget | 67% / 85% | 93% | 13% | $0.047 | 21s |
-| **v4-final** (default config) | + quote must come from the cited source's own text (review fix) | **60% / 87%** | 95% | **12%** | $0.049 | 24s |
-
-Each run checks about 70 cited sentences, so strict accuracy has a ±11-point 95% interval. The 54 → 60–67% trend is suggestive but not conclusive. The solid gains are structural: agents that silently lost all their sources fell from 25% to 12%, and every citation now carries a verified quote that a reader can check.
-
-What the numbers changed:
-- **v1 → v2:** English questions were answered in Chinese (the prompts are Chinese), and 36 of 41 tool errors were Wikipedia HTTP 429s. Fixed: the response language is pinned from the question, and `wiki_search` now makes one API call instead of four.
-- **Reflection didn't pay off.** It added +85% cost and ~2× latency for no gain in depth, so it is **off by default**. Turn it on with the *Deep review* toggle (`payload.reflect=true`, one round) or `payload.rounds=1..4`.
-- **Citations are the real weakness, and the hardest to move.** The report writer never saw the source text, so it attached sources to claims they don't make. Fix: each agent returns a verbatim quote per source, the loop keeps a quote only if it appears in that source's own tool output, and the writer cites only what the evidence supports. Remaining errors are mostly "partial" support: a date or number is not in the excerpt the agent read.
-- **Truncated answers lost their sources.** An 800-token answer budget truncated the JSON, so sources were silently lost; raising it to 1600 fixed this. The *agents with no sources* metric was added because of this bug.
-
-Re-run: `python3 eval/run_eval.py --label my-run` (judge reads `.env`; `--self-check` runs in CI).
-
-### Multi-hop questions (FRAMES)
-
-The 20 questions above can each be answered from one or two pages. `eval/frames_eval.py` runs questions from
-[FRAMES](https://huggingface.co/datasets/google/frames-benchmark) instead: each needs 2–15 Wikipedia articles
-and has a gold answer. 30 questions were used for tuning (dev) and 30 were held out.
-
-| Configuration | dev (30) | holdout (30) | Tokens / question |
-|---|---|---|---|
-| Same model, no tools | 16 | 12 | — |
-| Before: plan 2–4 sub-questions, research them in parallel | 13 | 12 | 27.8k / 25.9k |
-| **After (default): route first, answer-type questions are not split** | **19** | **17** | 22.8k / 21.9k |
-| After + `rounds=4` (a reviewer sends follow-up agents) | 22 | 19 | 45.4k / 44.4k |
-
-- **Parallel decomposition broke chained questions.** The planner wrote sub-questions like "In which city is *that* racecourse?" and sent them to parallel agents that could not know what "that" meant. 13 of 17 wrong answers ended with "cannot determine", and the pipeline scored below the same model with no tools.
-- **Fix: route first.** Answer-type questions go whole to one agent; report-type questions keep the old pipeline, which did not regress (depth 93% vs 95%, citation accuracy 62% / 87%, $0.047 per question).
-- **Follow-up rounds didn't pay off here either.** They rescued 1 of 9 questions while doubling tokens, so they stay off by default.
-- Before → after pooled over both sets is 25/60 → 36/60 (paired, p = 0.035); holdout alone is not significant at n = 30.
-
-Details, limits and re-run commands: [`eval/results/frames.md`](eval/results/frames.md).
-
 ## Retrieval evaluation
 
-The RAG tool first used a bag-of-words hash "embedding" (no model, no key): enough to wire the service
+The retrieval service first used a bag-of-words hash "embedding" (no model, no key): enough to wire the service
 up, but it has no notion of meaning. It now runs **hybrid retrieval**: BM25 (in-memory inverted index,
 Snowball stemming, CJK bigrams) and a local embedding model (`BAAI/bge-small-en-v1.5`, 33M parameters,
 quantized ONNX on CPU, baked into the image) each return their top 100, fused with **reciprocal rank
@@ -280,7 +187,7 @@ fusion** (k = 60).
 - **Is hybrid really better?** Paired bootstrap, 95% CI of the nDCG@10 gain: over BM25, +0.028…+0.076
   (SciFact) and +0.030…+0.057 (NFCorpus); over dense, +0.014…+0.041 on NFCorpus but −0.012…+0.036 on
   SciFact, i.e. not significant there.
-- **What the agent sees.** `kb_search` returns the top 3; Recall@3 on SciFact went 0.20 → 0.72.
+- **Top of the list.** Recall@3 on SciFact went 0.20 → 0.72.
   NFCorpus averages 38 relevant documents per query, so its recall@k is low by construction.
 - **Found while running it:** fastembed's default batch of 256 long documents used ~9 GB and swapped;
   batches of 32 use ~1 GB.
@@ -294,26 +201,21 @@ Re-run: `cd agentflow-rag && .venv/bin/python retrieval_eval.py --out ../eval/re
 ## Quick start
 
 ```bash
-# Full stack in containers (9 services: MySQL, Redis, MongoDB, Kafka, pgvector, RAG, server, 2 workers)
-cp .env.example .env
+# Full stack in containers (MySQL, Redis, MongoDB, Kafka, pgvector, retrieval service, server, 2 workers)
+cp .env.example .env          # default: mock model, no key, no cost
 docker compose up -d --build --wait
-scripts/e2e-agent.sh          # research task end-to-end
-scripts/chaos-agent.sh        # kill a worker mid-run → resume from checkpoint
+scripts/e2e-smoke.sh          # one task end to end
 
 # Local development: middleware in containers, apps from Maven
 docker compose up -d mysql redis mongo kafka pgvector rag
 mvn -q install -DskipTests
 mvn -q -f agentflow-server/pom.xml spring-boot:run     # terminal A  (:8080)
-mvn -q -f agentflow-worker/pom.xml spring-boot:run     # terminal B  (scale: run N)
+mvn -q -f agentflow-worker/pom.xml spring-boot:run     # terminal B  (run N of them to scale)
 ```
 
-Upgrading an existing database: run `docker/mysql/migrations/2026-10-15-subtask-kind.sql` and
-`docker/mysql/migrations/2026-11-09-stock-brief.sql` once each.
-
-**Web console** — open `http://localhost:8080/` (single-file dashboard: submit tasks, live progress,
-Run Trace timeline, LLM token accounting). See screenshot below.
-
-Submit via API:
+The lecture features need the media service on a machine with an NVIDIA GPU and a second compose file; the
+steps are in the [Chinese README](README.zh.md) under "跑起来". Upgrading an existing database: run
+`docker/mysql/migrations/2026-10-15-subtask-kind.sql` and `2026-11-13-course-video.sql` once each.
 
 ```bash
 curl -X POST localhost:8080/api/v1/tasks -H 'Content-Type: application/json' \
@@ -323,46 +225,16 @@ curl -X POST localhost:8080/api/v1/tasks -H 'Content-Type: application/json' \
 # GET /api/v1/llm/usage           -> token accounting per model
 ```
 
-**Daily stock brief** — open `http://localhost:8080/app.html`: register, add US tickers (up to 20), and
-the page shows what is new for them over the last 7 days, each item linked to its source. Optionally
-paste a Slack or Feishu bot webhook and pick an hour; new items are pushed once a day at that hour.
-Briefs are generated at 07:00 and 18:00 New York time, and right after a ticker is first added.
-Set `SEC_USER_AGENT` ("name email", required by SEC) to include SEC filings and validate tickers;
-without it the brief uses news search only. It organizes public information and gives no investment advice.
-Design notes: [`docs/product-framework.md`](docs/product-framework.md).
-
-Task types: `DAILY_BRIEF` (one subtask per watched ticker → sourced events; submitted by the scheduler, not over HTTP in demo mode) · `RESEARCH_AGENT` (plan → parallel ReAct agents → review & follow-ups → cited report) · `ECHO_BATCH` (echo, for load tests) ·
-`LLM_BATCH` (LLM summarize via gateway) · `RESEARCH_BATCH` (intent-gated RAG retrieval → summarize).
-
-### Public demo (Cloudflare Tunnel)
-
-```bash
-# .env: DEMO_ACCESS_CODE=<code you hand out>, DEMO_TRUST_PROXY_HEADER=true
-#       optional: DEMO_PER_IP_DAILY=5, DEMO_DAILY_BUDGET_USD=1.0
-brew install cloudflared
-scripts/demo-tunnel.sh        # prints https://<random>.trycloudflare.com; Ctrl-C takes it offline
-```
-
-With `DEMO_ACCESS_CODE` set, every `/api/**` call needs the code (the page asks for it), only
-`RESEARCH_AGENT` with the default model can be submitted, each client IP gets N tasks per day, and new
-tasks are refused once today's estimated LLM spend reaches the budget. The tunnel dials out from the
-machine, so no port is opened; the script refuses to start without an access code or with port 8080
-bound beyond localhost (the per-IP limit trusts `CF-Connecting-IP`, which is only safe behind the tunnel).
-The brief page (`/app.html`, `/api/v1/auth/**`, `/api/v1/me/**`) uses its own login instead of the access
-code; when serving it over https set `AUTH_COOKIE_SECURE=true` and `PUBLIC_BASE_URL` to the public address.
-Always set `DEMO_ACCESS_CODE` before exposing the server: without it the engine API (`/api/v1/tasks`, …) is open.
-Set `TAVILY_API_KEY` too — the DuckDuckGo fallback gets rate-limited once many tickers are briefed. Brief LLM spend
-counts toward the same daily figure as `DEMO_DAILY_BUDGET_USD` (reaching it pauses the console only; briefs are capped by count).
-
-> To re-record the demo GIF (`docs/img/demo.gif`), follow [`README.zh.md`](README.zh.md#录制-demo-gif).
+Task types: `LECTURE_INGEST`, `COURSE_QA`, `COURSE_VERIFY` (lectures) · `ECHO_BATCH` (load tests and fault
+drills) · `LLM_BATCH` (model calls through the gateway) · `RESEARCH_BATCH` (a retrieve-then-summarize demo).
 
 ---
 
 ## Tech stack
 
 Java 17 · Spring Boot 3 · Kafka (KRaft) · Redis/Redisson · MySQL · MongoDB · pgvector ·
-Python 3 / FastAPI (RAG microservice) · JDK HttpClient (LLM/RAG clients, no SDK bloat) ·
-Docker Compose. Tests: **174 Java + 27 Python**, integration tests hit real middleware.
+Python 3 / FastAPI (retrieval and media services) · faster-whisper · ONNX Runtime · JDK HttpClient (no LLM SDK) ·
+Docker Compose. Tests: **298 Java, 44 retrieval, 110 media**; the integration tests run against real middleware.
 
 ## Why not Temporal / LangGraph?
 
@@ -371,14 +243,8 @@ framework usage, and to keep every component explainable from principle to imple
 agent's inner LLM loop is where off-the-shelf pieces are fine; the orchestration/reliability layer
 is the moat.
 
-## Roadmap
+## What is not done
 
-- [x] W1–8: skeleton → reliability & observability → LLM gateway & controllable agent → RAG &
-  multi-role → load test & fault drill (all 7 metrics measured) + Web console
-- [ ] W9 (optional add-ons): cloud deploy (GCP/AWS free tier), Prometheus metrics, Zookeeper
-  leader-election/registration
-- [x] Research agent: real tool-calling ReAct loop, per-step checkpoint & resume, one-command compose, CI
-- [x] Real retrieval: hybrid BM25 + local embedding model (RRF), evaluated on BEIR against published baselines
-- [ ] Future work: durable execution with one Kafka message per agent step (Temporal-style) — today a long loop
-  occupies one worker; SSE instead of 1s polling; general web search tool; auth
-- [ ] W10: résumé bullets finalized (see [`docs/resume-bullets.md`](docs/resume-bullets.md))
+The second version in the design (playlists and Bilibili, a course-wide concept map, evidence from frames,
+isolation of batch ingest from interactive Q&A, a long-running instance, a native Anthropic client) and the
+open problems found so far are listed in [`docs/open-problems.md`](docs/open-problems.md).

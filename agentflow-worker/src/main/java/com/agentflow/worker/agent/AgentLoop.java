@@ -21,24 +21,19 @@ import org.springframework.stereotype.Component;
 import java.net.InetAddress;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
- * ReAct 循环:思考 → 调工具 → 看结果 → … → 给出带来源的结论。
+ * ReAct 循环:思考 → 调工具 → 看结果 → … → 给出最后的回答。用哪些工具、什么提示词由调用方的 {@link Profile} 决定。
  *
  * <ul>
  *   <li>每一步完整结束(LLM 决策 + 全部工具结果)后写 {@link AgentCheckpoint};重新投递时从下一步续跑,
  *       已调用过的工具直接复用存档结果,不重复调用。</li>
  *   <li>工具出错不抛:以 "ERROR: ..." 回给模型让它自己纠正;只有 LLM 调用失败才让子任务进入重试。</li>
  *   <li>同一次运行内相同 name+参数的调用走缓存,防止模型原地打转。</li>
- *   <li>最终 sources 只保留本次运行工具真实返回过的 URL(防编造引用),删掉的发 CITATION_DROPPED;
- *       来源附带的原文摘录(quote)必须真的出现在"这个 URL 所在的那段工具结果"里且不少于
- *       {@link #MIN_QUOTE_CHARS} 字,否则去掉摘录,计入 unverifiedQuotes。</li>
  *   <li>最多 {@link #MAX_STEPS} 步,超出则去掉工具强制作答。</li>
  * </ul>
  * ponytail: 上下文靠"单个工具结果截断 2000 字 × 最多 10 步"封顶,没有按 token 预算裁剪历史
@@ -49,23 +44,18 @@ import java.util.stream.Collectors;
 public class AgentLoop {
 
     static final int MAX_STEPS = 10;   // 6 → 10:不拆的链式问题要一个 agent 连查几环(FRAMES 试跑里最多用到 9 步)
-    static final int MAX_TOKENS = 1600;   // 800 时带摘录的 JSON 常被截断,来源全丢(见评测 v3)
     static final int PREVIEW_CHARS = 300;
     static final String ERROR = "ERROR: ";
-    static final int MIN_QUOTE_CHARS = 20;
     static final String WORKER_ID = hostname();
     private static final ObjectMapper OM = new ObjectMapper();
 
     private final LlmGateway gateway;
-    private final List<AgentTool> tools;
     private final AgentCheckpoint checkpoint;
     private final TraceEmitter trace;
     private final LlmModelProperties props;
 
-    public AgentLoop(LlmGateway gateway, List<AgentTool> toolList, AgentCheckpoint checkpoint,
-                     TraceEmitter trace, LlmModelProperties props) {
+    public AgentLoop(LlmGateway gateway, AgentCheckpoint checkpoint, TraceEmitter trace, LlmModelProperties props) {
         this.gateway = gateway;
-        this.tools = List.copyOf(toolList);   // 注册的顺序就是发给模型的顺序
         this.checkpoint = checkpoint;
         this.trace = trace;
         this.props = props;
@@ -77,7 +67,7 @@ public class AgentLoop {
      *
      * <p>failOnToolError:工具自己出故障(不是模型把参数写错)时让整个运行失败、交给重试,而不是把错误当结果给模型看。
      * 课程问答用它:检索服务挂了的时候,模型看到的"检索失败"会被它当成"课里没讲"。
-     * 研究 agent 不用:它的工具是外部网站,偶尔失败很正常,模型可以换个工具再查。
+     * 工具是外部网站这类偶尔失败很正常的场景可以关掉,让模型换个工具再查。
      */
     public record Profile(String systemPrompt, List<AgentTool> tools, int maxTokens, int maxToolChars,
                           boolean failOnToolError) {
@@ -85,22 +75,6 @@ public class AgentLoop {
 
     /** 循环的结果:模型最后的回答原文、用了几步、token 用量、全部已完成的步骤(含续跑前存档的)。 */
     public record Outcome(String content, int stepCount, Usage usage, List<AgentStep> history) {
-    }
-
-    /** 研究 agent:全部已注册的工具 + 研究用的提示词,收尾时按 URL 核对引用。 */
-    public ObjectNode run(AgentRun run) {
-        Profile research = new Profile(Prompts.system(Prompts.AGENT, run.question()),
-                tools, MAX_TOKENS, TextUtil.MAX_TOOL_CHARS, false);
-        Outcome out = converse(run, research, List.of(new ChatMessage("user", run.question())));
-        Set<String> seenUrls = new LinkedHashSet<>();
-        Map<String, StringBuilder> textByUrl = new HashMap<>();   // URL → 它所在的那段工具结果,核对摘录用
-        for (AgentStep s : out.history()) {
-            for (ChatMessage result : s.toolResults()) {
-                seenUrls.addAll(TextUtil.urls(result.getContent()));
-                indexByUrl(result.getContent(), textByUrl);
-            }
-        }
-        return finish(run, out.stepCount(), out.content(), seenUrls, textByUrl, out.usage());
     }
 
     /**
@@ -200,71 +174,6 @@ public class AgentLoop {
         }
         cache.put(key, out);
         return out;
-    }
-
-    private ObjectNode finish(AgentRun run, int step, String content, Set<String> seenUrls,
-                              Map<String, StringBuilder> textByUrl, Usage usage) {
-        String answer = content == null ? "" : content.trim();
-        JsonNode sources = OM.createArrayNode();
-        try {
-            JsonNode parsed = TextUtil.parseObject(content);
-            if (parsed.path("answer").isTextual()) {
-                answer = parsed.get("answer").asText();
-                sources = parsed.path("sources");
-            }
-        } catch (IllegalStateException e) {
-            // 模型没按 JSON 作答:整段当答案、无来源。宽松兜底,不为格式问题烧重试。
-        }
-        if (answer.isBlank()) {
-            throw new IllegalStateException("agent 最终答案为空");
-        }
-        ArrayNode kept = OM.createArrayNode();
-        ArrayNode dropped = OM.createArrayNode();
-        int unverifiedQuotes = 0;
-        for (JsonNode s : sources) {
-            String url = s.path("url").asText("");
-            if (seenUrls.contains(url)) {
-                ObjectNode src = kept.addObject().put("title", s.path("title").asText(url)).put("url", url);
-                String quote = s.path("quote").asText("").trim();
-                String q = TextUtil.normalize(quote);
-                if (q.length() >= MIN_QUOTE_CHARS
-                        && TextUtil.normalize(String.valueOf(textByUrl.get(url))).contains(q)) {
-                    src.put("quote", quote);
-                } else if (!quote.isEmpty()) {
-                    unverifiedQuotes++;
-                }
-            } else {
-                dropped.add(url);
-            }
-        }
-        if (!dropped.isEmpty()) {
-            ObjectNode d = OM.createObjectNode();
-            d.set("urls", dropped);
-            emit(run, TraceStage.CITATION_DROPPED, d);
-        }
-        emit(run, TraceStage.AGENT_STEP, OM.createObjectNode().put("step", step).put("final", true)
-                .put("answer", TextUtil.truncate(answer, PREVIEW_CHARS)).put("workerId", WORKER_ID));
-
-        ObjectNode out = OM.createObjectNode();
-        out.put("question", run.question());
-        out.put("answer", answer);
-        out.set("sources", kept);
-        out.put("unverifiedQuotes", unverifiedQuotes);
-        out.set("usage", OM.valueToTree(usage));
-        out.put("steps", step);
-        return out;
-    }
-
-    /**
-     * 工具结果按空行切块(搜索结果一条一块,网页正文整篇一块),块里出现的 URL 关联这块文字。
-     * 这样摘录只能来自被引用的那个来源,不能把 A 的原话挂到 B 的链接上。
-     */
-    static void indexByUrl(String out, Map<String, StringBuilder> textByUrl) {
-        for (String block : out.split("\n\\s*\n")) {
-            for (String url : TextUtil.urls(block)) {
-                textByUrl.computeIfAbsent(url, k -> new StringBuilder()).append(block).append('\n');
-            }
-        }
     }
 
     /** 拷贝 messages:后续追加不影响已发出的请求。 */

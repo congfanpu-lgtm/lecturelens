@@ -92,13 +92,7 @@ services:
     environment:
       AGENTFLOW_SUBTASK_PARTITIONS: ${SUBTASK_PARTITIONS:-8}   # 同时在跑的子任务上限,和 WORKER_CONCURRENCY 一起调
       DEMO_ACCESS_CODE: ${DEMO_ACCESS_CODE:-}
-      DEMO_PER_IP_DAILY: ${DEMO_PER_IP_DAILY:-5}
-      DEMO_DAILY_BUDGET_USD: ${DEMO_DAILY_BUDGET_USD:-1.0}
-      DEMO_TASK_COST_ESTIMATE_USD: ${DEMO_TASK_COST_ESTIMATE_USD:-0.05}
       DEMO_TRUST_PROXY_HEADER: ${DEMO_TRUST_PROXY_HEADER:-false}
-      SEC_USER_AGENT: ${SEC_USER_AGENT:-}
-      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8080}
-      AUTH_COOKIE_SECURE: ${AUTH_COOKIE_SECURE:-false}
       AGENTFLOW_COURSE_ENABLED: ${COURSE_ENABLED:-false}        # 课程录播接口,默认关闭(见 docker/course.yml)
       MEDIA_BASEURL: ${MEDIA_BASEURL:-http://localhost:8010}
       SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/agentflow?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai
@@ -129,8 +123,6 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_EXTRA_BODY: ${OPENAI_EXTRA_BODY:-}
       OPENAI_MAX_TOKENS_PARAM: ${OPENAI_MAX_TOKENS_PARAM:-max_tokens}
-      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
-      SEC_USER_AGENT: ${SEC_USER_AGENT:-}
     depends_on:
       redis: {condition: service_healthy}
       kafka: {condition: service_healthy}

@@ -30,7 +30,7 @@ services:
                   LLM_MODEL: "${COURSE_LLM_MODEL:-mock-small}", LLM_MOCK_DELAYMS: "${LLM_MOCK_DELAY_MS:-0}",
                   OPENAI_API_KEY: "${COURSE_OPENAI_API_KEY:-}", OPENAI_BASE_URL: "${COURSE_OPENAI_BASE_URL:-https://api.openai.com/v1}",
                   OPENAI_EXTRA_BODY: "${COURSE_OPENAI_EXTRA_BODY:-}", OPENAI_TIMEOUT_SECONDS: "${COURSE_OPENAI_TIMEOUT_SECONDS:-60}",
-                  TAVILY_API_KEY: "", MEDIA_BASEURL: "http://host.docker.internal:8010",
+                  MEDIA_BASEURL: "http://host.docker.internal:8010",
                   MEDIA_OCRBASEURL: "${OCR_URL_1:-}",
                   MEDIA_TIMEOUTMS: "3600000", AGENTFLOW_WORKER_MAX_POLL_INTERVAL_MS: "3900000"}
   worker-2:
@@ -40,6 +40,6 @@ services:
                   LLM_MODEL: "${COURSE_LLM_MODEL:-mock-small}", LLM_MOCK_DELAYMS: "${LLM_MOCK_DELAY_MS:-0}",
                   OPENAI_API_KEY: "${COURSE_OPENAI_API_KEY:-}", OPENAI_BASE_URL: "${COURSE_OPENAI_BASE_URL:-https://api.openai.com/v1}",
                   OPENAI_EXTRA_BODY: "${COURSE_OPENAI_EXTRA_BODY:-}", OPENAI_TIMEOUT_SECONDS: "${COURSE_OPENAI_TIMEOUT_SECONDS:-60}",
-                  TAVILY_API_KEY: "", MEDIA_BASEURL: "http://host.docker.internal:8010",
+                  MEDIA_BASEURL: "http://host.docker.internal:8010",
                   MEDIA_OCRBASEURL: "${OCR_URL_2:-}",
                   MEDIA_TIMEOUTMS: "3600000", AGENTFLOW_WORKER_MAX_POLL_INTERVAL_MS: "3900000"}

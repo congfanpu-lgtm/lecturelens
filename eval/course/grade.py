@@ -12,7 +12,7 @@
 - 中断后再跑会接着打,已经有分的不重打。分数是跟着那一次运行(taskUuid)记的:某一题用 --retry-failed 重跑过,
   旧的分数就作废,再跑一次 grade.py 会给新的运行打分。打完之后 score.py 的报告里就会多出"答对率"两列。
 
-打分模型的地址和 key 和 eval/run_eval.py 一样,从 .env 的 OPENAI_BASE_URL / OPENAI_API_KEY 读(按字面读,不要 source)。
+打分模型的地址和 key 从 .env 的 OPENAI_BASE_URL / OPENAI_API_KEY 读(按字面读,不要 source;见 llm.py)。
 """
 import argparse
 import json
@@ -207,10 +207,10 @@ def main():
         return 0
     if not args.run_dir:
         p.error("要给运行目录")
-    import run_eval   # eval/run_eval.py:评审模型的调用(重试、厂商参数)已经在那里写好了
+    import llm
     if os.path.exists(args.env_file):
-        os.environ.update(run_eval.read_env_file(args.env_file))
-    judge = run_eval.Judge(args.model)
+        os.environ.update(llm.read_env_file(args.env_file))
+    judge = llm.Client(args.model)
     # 打分模型偶尔先逐条说理由再给 JSON,300 个 token 不够它说完
     n = grade_dir(args.run_dir, lambda system, user: judge.ask(system, user, max_tokens=1000), args.model)
     print(f"打了 {n} 条;重新出报告:python3 eval/course/score.py {args.run_dir}")

@@ -9,16 +9,16 @@ class PromptsTest {
 
     @Test
     void englishQuestionGetsEnglishInstruction() {
-        String sys = Prompts.system(Prompts.AGENT, "How does Raft elect a leader?");
-        assertTrue(sys.startsWith(Prompts.AGENT_TAG), "角色标签必须仍在开头(mock 靠它识别角色)");
+        String sys = Prompts.system(Prompts.COURSE_QA, "How does Raft elect a leader?");
+        assertTrue(sys.startsWith(Prompts.COURSE_QA_TAG), "角色标签必须仍在开头(mock 靠它识别角色)");
         assertTrue(sys.contains("Today is "), sys);
         assertTrue(sys.endsWith(Prompts.ENGLISH), sys);
     }
 
     @Test
     void chineseQuestionGetsChineseInstruction() {
-        assertTrue(Prompts.system(Prompts.PLANNER, "Redis 的持久化机制 RDB 和 AOF 有什么区别？").endsWith(Prompts.CHINESE));
+        assertTrue(Prompts.system(Prompts.JUDGE, "Redis 的持久化机制 RDB 和 AOF 有什么区别？").endsWith(Prompts.CHINESE));
         // 中文问题里夹英文术语仍是中文问题
-        assertTrue(Prompts.system(Prompts.PLANNER, "LangGraph 和 CrewAI 有什么区别").endsWith(Prompts.CHINESE));
+        assertTrue(Prompts.system(Prompts.JUDGE, "LangGraph 和 CrewAI 有什么区别").endsWith(Prompts.CHINESE));
     }
 }

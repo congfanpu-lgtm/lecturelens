@@ -3,10 +3,6 @@ package com.agentflow.worker.agent;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 /** 处理模型/工具文本的小工具:宽松提取 JSON、提取 URL、截断。 */
 public final class TextUtil {
@@ -16,7 +12,6 @@ public final class TextUtil {
 
     private static final ObjectMapper OM = new ObjectMapper();
     // 保留括号(Wikipedia 的 Kafka_(software) 这类 URL),以空白/引号/尖括号/方括号为界
-    private static final Pattern URL = Pattern.compile("(?:https?|kb)://[^\\s\"'<>\\[\\]]+");
 
     private TextUtil() {}
 
@@ -35,19 +30,6 @@ public final class TextUtil {
         } catch (Exception e) {
             throw new IllegalStateException("LLM 输出 JSON 解析失败:" + truncate(text, 200));
         }
-    }
-
-    /** 提取文本中的 http/https/kb URL,去掉句末标点。 */
-    public static List<String> urls(String text) {
-        List<String> out = new ArrayList<>();
-        if (text == null) {
-            return out;
-        }
-        Matcher m = URL.matcher(text);
-        while (m.find()) {
-            out.add(m.group().replaceAll("[.,;:!?。，；]+$", ""));
-        }
-        return out;
     }
 
     public static String truncate(String s, int max) {

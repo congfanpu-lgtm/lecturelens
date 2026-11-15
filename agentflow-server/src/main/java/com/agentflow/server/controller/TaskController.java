@@ -1,7 +1,6 @@
 package com.agentflow.server.controller;
 
 import com.agentflow.server.demo.DemoGuard;
-import jakarta.servlet.http.HttpServletRequest;
 import com.agentflow.server.controller.dto.SubmitTaskRequest;
 import com.agentflow.server.controller.dto.TaskView;
 import com.agentflow.server.entity.TaskEntity;
@@ -24,15 +23,9 @@ public class TaskController {
     private final DemoGuard demoGuard;
 
     @PostMapping
-    public ResponseEntity<Map<String, String>> submit(@RequestBody SubmitTaskRequest req, HttpServletRequest http) {
-        demoGuard.checkSubmit(http, req.getType(), req.getPayload());
-        TaskEntity task;
-        try {
-            task = submitService.submit(req.getType(), req.getPayload());
-        } catch (IllegalArgumentException e) {
-            demoGuard.refund(http);   // 不合法的提交不占演示额度
-            throw e;
-        }
+    public ResponseEntity<Map<String, String>> submit(@RequestBody SubmitTaskRequest req) {
+        demoGuard.forbidInDemo();   // 通用接口能按任意类型、任意模型跑任务
+        TaskEntity task = submitService.submit(req.getType(), req.getPayload());
         return ResponseEntity.status(HttpStatus.ACCEPTED)
                 .body(Map.of("taskUuid", task.getTaskUuid()));
     }

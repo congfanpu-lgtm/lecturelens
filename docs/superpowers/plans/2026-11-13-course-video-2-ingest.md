@@ -31,8 +31,8 @@
 
 ```bash
 SYNC() { rsync -az --delete --exclude .git --exclude .env --exclude target --exclude .venv --exclude __pycache__ \
-  --exclude .pytest_cache --exclude .superpowers --exclude 'agentflow-media/data' ./ Upton@100.65.10.56:project/agentflow-course-dev/; }
-R() { ssh Upton@100.65.10.56 "cd ~/project/agentflow-course-dev && $*"; }
+  --exclude .pytest_cache --exclude .superpowers --exclude 'agentflow-media/data' ./ user@gpu-server:project/agentflow-course-dev/; }
+R() { ssh user@gpu-server "cd ~/project/agentflow-course-dev && $*"; }
 ```
 
 - 提交信息用 Conventional Commits、中文描述，结尾带仓库现行的两行 trailer。按 `CLAUDE.md`，每个任务完成后提交并推送到 `main`。
@@ -201,7 +201,7 @@ git add agentflow-media && git commit -m "fix(media): 截帧忽略一直在动�
 - [ ] **Step 6: 在真实的那一讲上量效果**
 
 ```bash
-ssh Upton@100.65.10.56 'cd ~/project/agentflow-drill && git pull -q --ff-only && pkill -f "[u]vicorn app.main:app --host 127.0.0.1 --port 8010"; sleep 2
+ssh user@gpu-server 'cd ~/project/agentflow-drill && git pull -q --ff-only && pkill -f "[u]vicorn app.main:app --host 127.0.0.1 --port 8010"; sleep 2
 cd agentflow-media; MEDIA_ROOT=$HOME/agentflow-media-data HF_HOME=$HOME/agentflow-media-data/hf setsid nohup ./run.sh > ~/agentflow-media-data/media.log 2>&1 < /dev/null &
 sleep 5; K=2032f640a62a2633d5293a4d0b2a621f
 time curl -s -m 1800 -X POST http://127.0.0.1:8010/media/$K/frames; echo
@@ -308,7 +308,7 @@ Expected: Java 没有失败的测试（`mvn -q` 成功时几乎没有输出，�
 - [ ] **Step 4: 让容器能访问到媒体服务**
 
 ```bash
-ssh Upton@100.65.10.56 'GW=$(docker network inspect bridge -f "{{(index .IPAM.Config 0).Gateway}}"); echo "gateway=$GW"
+ssh user@gpu-server 'GW=$(docker network inspect bridge -f "{{(index .IPAM.Config 0).Gateway}}"); echo "gateway=$GW"
 cd ~/project/agentflow-drill && git pull -q --ff-only; pkill -f "[u]vicorn app.main:app --host 127.0.0.1 --port 8010"; sleep 2; cd agentflow-media
 MEDIA_HOST=$GW MEDIA_ROOT=$HOME/agentflow-media-data HF_HOME=$HOME/agentflow-media-data/hf setsid nohup ./run.sh > ~/agentflow-media-data/media.log 2>&1 < /dev/null &
 sleep 5; docker run --rm --add-host host.docker.internal:host-gateway curlimages/curl:8.11.1 -s -m 5 http://host.docker.internal:8010/health'
@@ -1765,7 +1765,7 @@ Expected: 每个问题有 3 条命中，文字和问题相关，命中里既有 
 2. 对一讲 `READY` 的讲次点重试。Expected: 400。
 3. 把同一个链接再加一次（另一讲）。Expected: 很快 `READY`（导入、转写、截帧都命中缓存），媒体服务的 `/stats` 计数不变。
 
-- [ ] **Step 5: 在浏览器里看两个页面**（Mac 上 `ssh -N -L 18090:127.0.0.1:18090 Upton@100.65.10.56` 开隧道，打开 `http://localhost:18090/courses.html`）
+- [ ] **Step 5: 在浏览器里看两个页面**（Mac 上 `ssh -N -L 18090:127.0.0.1:18090 user@gpu-server` 开隧道，打开 `http://localhost:18090/courses.html`）
 
 逐项确认并截图：课程库显示两讲和五个步骤的状态；点进单讲页，播放器能播；点一行逐字稿、点一个知识点、点一张幻灯片都会跳到对应时间；搜索框能过滤；控制台没有报错。发现的问题在本任务里修，修完重新同步、重新 `up`。
 
@@ -1774,4 +1774,4 @@ Expected: 每个问题有 3 条命中，文字和问题相关，命中里既有 
 `docs/benchmarks.md` 第 8 节：两讲各自的时长、五个步骤的用时（`stages[].seconds`）、片段数（speech / slide）、知识点数（注明是模拟模型出的，只说明流程通了）、三次失败情况的结果、检索的例子。`README.zh.md` 的小节写明第一版的范围限制。
 `git commit -m "docs: 课程录播摄入的端到端实测和使用说明"`
 
-整套环境留在服务器上继续跑，计划 3 要用。停掉：`ssh Upton@100.65.10.56 'cd ~/project/agentflow-course-dev && ./scripts/course-env.sh down'`。
+整套环境留在服务器上继续跑，计划 3 要用。停掉：`ssh user@gpu-server 'cd ~/project/agentflow-course-dev && ./scripts/course-env.sh down'`。

@@ -7,7 +7,7 @@
 - 只起草单讲题。跨讲次题要自己写:能起草跨讲次题的只有长上下文模型,而它正是被比较的对象。
 - 起草出来的题不能直接用:逐题改写问法(别贴着原文,否则关键词检索白占便宜),核对要点和时间段,
   改好的抄进 questions.jsonl,author 写 model-drafted。
-- 模型的地址和 key 和 eval/run_eval.py 一样,从 .env 的 OPENAI_BASE_URL / OPENAI_API_KEY 读。
+- 模型的地址和 key 从 .env 的 OPENAI_BASE_URL / OPENAI_API_KEY 读(见 llm.py)。
 """
 import argparse
 import json
@@ -108,10 +108,10 @@ def main():
         return 0
     if not args.course:
         p.error("要给 --course")
-    import run_eval
+    import llm
     if os.path.exists(args.env_file):
-        os.environ.update(run_eval.read_env_file(args.env_file))
-    model = run_eval.Judge(args.model)
+        os.environ.update(llm.read_env_file(args.env_file))
+    model = llm.Client(args.model)
 
     def get(path):
         with urllib.request.urlopen(args.api + path, timeout=60) as r:

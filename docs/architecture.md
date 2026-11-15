@@ -9,7 +9,7 @@
 ```mermaid
 flowchart TB
     user([用户 / Client])
-    console[Web 控制台<br/>static/index.html]
+    console[页面<br/>课程库 · 单讲 · 问答]
 
     subgraph HARNESS["Harness · 管控面 (Java / Spring Boot)"]
         api["API 服务 (REST)"]
@@ -30,7 +30,7 @@ flowchart TB
     subgraph RUNTIME["Runtime · 执行面 · Worker 池 ×N (Java)"]
         listener["SubtaskListener<br/>按 type 路由"]
         idem["幂等去重 (MD5 + Redis)"]
-        proc["SubtaskProcessor<br/>Echo / LLM / Research"]
+        proc["SubtaskProcessor<br/>课程摄入 · 课程问答 · LLM 批量"]
         ctx["AgentContext<br/>上下文裁剪防膨胀"]
         skill["Skill 注册 + schema 校验"]
         gw["LLM 网关<br/>Redis+Lua 令牌桶 · 路由 · 记账"]
