@@ -878,3 +878,90 @@ check. Seven questions are too few to separate the systems.
 - One of the seven not-in-course questions (an algorithm name) is on a slide although it is never spoken; the
   questions were written from speech only.
 - The largest S1 run read 69,393 input tokens (19 of 267 above 40,000): the agent's cost has a long tail.
+
+---
+
+## 13. Two changes after the first run, each measured by a rerun (2026-11-14)
+
+The first run (section 12) pointed at two defects. Each was changed alone and the evaluation rerun on the same
+frozen questions with the same model; the expectations were written into the plan before each rerun
+(`docs/superpowers/plans/2026-11-14-course-video-4-eval.md`, parts three and four). All three runs are graded
+by the corrected grader. Tables: [`course-haiku-v2.md`](../eval/results/course-haiku-v2.md),
+[`course-haiku-v3.md`](../eval/results/course-haiku-v3.md).
+
+| | Run 1 | Run 2: slide quotes compared by letters and digits | Run 3: concept directory written by the real model |
+|---|---|---|---|
+| Runs | 831, four systems | 831, four systems | 534, S1 and S3 only |
+| Cost at list price | $4.75 | $4.69 | $1.45 |
+| S1 correct / cross-lecture | 70% / 57% | 71% / 62% | 72% / 63% |
+| S3 correct / cross-lecture | 72% / 62% | 74% / 64% | 73% / 65% |
+| S2 correct / cross-lecture | 48% / 30% | 50% / 30% | not rerun |
+| B1 correct (30 questions, one round) | 56% | 55% | not rerun |
+| S1 slide quotes that pass the check | 48% | 72% | 73% |
+| S1 claims removed by the code checks | 11% | 8% | 7% |
+| S1 claims removed by the judge | 8% | 9% | 9% |
+| S1 answers that needed the repair round | 62 of 267 | 50 | 40 |
+
+**Run 2: slide quotes.** The OCR often runs words together, the model writes them apart, and the check
+compared character by character. Slide quotes are now compared on letters and digits only; speech quotes are
+unchanged. Differences are run 2 minus run 1, paired by question.
+
+| Expectation written before the run | Result |
+|---|---|
+| The agent's slide quotes pass 70% of the time or more (was 48% / 50%) | **Holds**: S1 72%, S3 78% |
+| S1's share of claims removed by the code checks falls below 9% (was 11%) | **Holds**: 8%; −3.9 points [−6.6, −1.2] |
+| S1's correctness does not fall; a gain of 1 to 3 points, probably not separable | **Holds**: +1.1 [−2.8, +5.1] |
+| The judge removes slightly more (more slide claims reach it) | Direction only: +1.3 [−0.7, +3.3] |
+| Speech quotes, S2 and B1 do not move; the first run's verdicts keep their direction | **Holds**: S1 speech quotes 93.1% → 93.3%; S2 +2.0 [−0.9, +5.2], B1 −1.1 [−12.8, +10.6] |
+
+- What still fails: 28% of S1's slide quotes are on no slide of the lecture — the model joins lines with "…"
+  or rewords them.
+- The fix shows in the verification numbers and not in correctness: the claims it rescues were mostly
+  replaced by the repair round before (62 → 50 answers needed one).
+- The first run's three verdicts in this run: S1 − S2 on cross-lecture questions +31.2 [+16.5, +45.1];
+  S1 − S3 −3.2 [−6.5, +0.2]; B1 − S1 −18.2 [−32.6, −5.0].
+- **The long context, two rounds together** (the change does not touch it): −17.7 points [−30.1, −6.3] against
+  S1 when only verified claims count. In the first run this was borderline; with a second round it is not.
+  Counting every proposed claim it is level: 82% against 77%, +4.9 [−4.5, +13.7].
+
+**Run 3: the concept directory.** While run 2 was running it turned out that the course used in runs 1 and 2
+had placeholder concept directories: the environment defaults to the mock model, which names concepts
+"知识点 1, 知识点 2, …" and uses the first sentence of a segment as the summary. The agent's
+`course_overview` tool reads that directory, and the agent calls it in every question. So in runs 1 and 2 the
+agent's overview carried almost no information. For run 3 the same 11 lectures were added to a new course with
+the real model switched on (downloads, transcripts and slide text came from the cache: all 11 searchable
+after 60 s, 10 to 22 concepts per lecture, none failed), and the two systems that read the directory were rerun.
+
+| Expectation written before the run | Result |
+|---|---|
+| "Evidence in every lecture of a cross-lecture question" rises by 5 points or more | **Not shown**: S1 +6.1 [−10.6, +24.2], S3 −6.1 [−22.7, +10.6] |
+| Correctness on one-lecture questions does not move | **Holds**: S1 +0.6 [−3.6, +5.0], S3 −1.3 [−5.4, +2.5] |
+| Input tokens per question rise by 10% to 30% | **Does not hold**: S1 −0.4%, S3 +5%, neither separable |
+| If none of the three holds, the overview tool does not matter here | Correctness: S1 +1.1 [−2.6, +4.9], S3 −1.1 [−5.1, +2.7] |
+
+- **A real concept directory changes nothing measurable.** On this course and these questions the agent finds
+  what it needs by searching; the overview is called once per question and costs the same either way. Whether
+  that holds for a much larger course, where a search cannot cover the ground, is not tested.
+- It does mean the numbers of runs 1 and 2 were not held back by the placeholder directory, which was the worry.
+- This was also the first time the concept directory ran on a real model (open problem Q2): the 6,000-token
+  output limit was enough for every lecture.
+
+**The judge across the three runs.** S1 minus S3 in correctness: −2.1, −3.2 and −1.0, none separable alone.
+Pooled over the three runs (nine rounds per system) it is −2.1 points [−4.1, −0.0]: the judge costs about two
+points. Together with the blind labels of section 12 (more than half of what it rejects is supported) the
+picture is consistent: as built, the judge takes out good claims slightly more than it protects the answer.
+Asked a second time, it rejects 5% to 7% of the claims it had passed, against 9% to 11% of S3's.
+
+**Where this leaves the system**
+
+- Kept: the agent over the fixed pipeline (+21 to +22 points, +27 to +31 on cross-lecture questions, in both
+  full runs); the two code checks (time, quote); evidence in a gold range for 96% to 97% of answers.
+- Changed and measured: the slide-quote check.
+- Not earning its place yet: the judge layer. S3 is as correct as S1 or slightly better and 2 s
+  faster per question, and about a fifth cheaper.
+- Not better than the alternative, only cheaper and checkable: against the whole course in one call, the
+  agent's answers are level in content and its evidence can be verified at a thirty-fifth of the cost.
+
+**Limits added by this section**: the comparisons between runs carry run-to-run noise as well as the change;
+the grader is still the same model as the systems; the three runs together cost $10.89 at list price for the
+question-answering calls, not counting grading, the judge's second looks and the concept directories.

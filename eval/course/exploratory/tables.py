@@ -73,7 +73,7 @@ print('\n== B1 - S1 correctness against each S1 round separately (B1 has one rou
 by_round = {}
 for (qid, s, rnd), (u, sc) in grades.items():
     if qid in b1: by_round.setdefault((s, rnd), {})[qid] = sc
-for rnd in (1, 2, 3):
+for rnd in (1, 2, 3) if ('B1', 1) in by_round else ():
     d = score.bootstrap_diff(by_round[('B1', 1)], by_round[('S1', rnd)])
     print(f'  S1 round {rnd}: {100*d[0]:+.1f} [{100*d[1]:+.1f}, {100*d[2]:+.1f}] n={d[3]}')
 

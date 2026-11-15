@@ -1,7 +1,7 @@
 # LectureLens
 
 [![CI](https://github.com/congfanpu-lgtm/lecturelens/actions/workflows/ci.yml/badge.svg)](https://github.com/congfanpu-lgtm/lecturelens/actions/workflows/ci.yml)
-· [中文](README.zh.md) · measurements: [`docs/benchmarks.md`](docs/benchmarks.md) sections 7 to 12
+· [中文](README.zh.md) · measurements: [`docs/benchmarks.md`](docs/benchmarks.md) sections 7 to 13
 
 **An AI learning platform for lecture recordings.** Paste the link of a lecture: LectureLens downloads it,
 transcribes it, reads the slides, cuts it into searchable segments and builds a concept directory. Then you can
@@ -21,7 +21,7 @@ the judge rejects many claims that the source does support (section 12 of the be
 | Course library page and lecture page | done |
 | Search across a course (dense + BM25, scoped to the course) | done |
 | Q&A agent whose every claim carries lecture, time range and quote; three-layer verification; Q&A page | done |
-| Evaluation: 89 questions, four systems, paired differences with intervals | first run done with Claude Haiku ([`docs/benchmarks.md`](docs/benchmarks.md) section 12); the questions were written by a model, the judge is not yet calibrated against human labels |
+| Evaluation: 89 questions, four systems, paired differences with intervals | three runs with Claude Haiku ([`docs/benchmarks.md`](docs/benchmarks.md) sections 12 and 13); the questions and the judge-calibration labels were written by a model, not by people |
 
 ```mermaid
 flowchart LR
@@ -54,14 +54,14 @@ twice does no work the second time.
 | More OCR replicas on the same machine | no gain (1 replica 2.6 slides/s, 4 replicas 4.1, no replica 4.0): OCR throughput has a ceiling here, most likely memory bandwidth; several machines not measured |
 | Worker killed mid-answer | another worker resumes from the checkpointed step; done 51 s later (mock model and mock judge) |
 
-| Course Q&A, 89 questions written by a model, Claude Haiku, 831 runs (section 12) | |
+| Course Q&A, 89 questions written by a model, Claude Haiku; three runs, 2,196 answers (sections 12 and 13) | |
 |---|---|
-| Agent against one search and one call, share of required points answered | 70% against 48%, +22.2 points [+15.4, +29.0]; on the 22 cross-lecture questions 57% against 30%, +27.3 [+12.9, +40.5] |
-| Evidence of the agent's answers falls in a gold time range | 97% of answerable questions (one search: 79%) |
-| With and without the judge | the judge removes 8% of the agent's claims. Asked afterwards, it rejects 11% of the claims in answers it never saw and 5% in answers it had already passed: difference 5.3 points [+2.8, +7.9]. Correctness −2.1 points [−6.1, +2.1], not separable from zero. The judge itself is not yet checked against human labels |
-| Against the whole course in one 200,000-token call (30 questions, one round) | $0.0029 against $0.102 per question (35×). Counting only verified claims the long context is lower, −11.8 points [−23.8, −0.6], borderline; counting everything it says, it is level or better (80% against 71%, +8.8 [−0.0, +17.2], an analysis added after the run). Verification takes 27 points from it and 4 from the agent: half of its quotes are not word for word at the cited time |
-| Unrelated sentence swapped in as evidence | the judge rejected 50 of 50 |
-| Where the agent's own quotes fail | 93% of its speech quotes are word for word, but only 48% of its slide quotes: the OCR runs words together and the check compares characters (not fixed yet) |
+| Agent against one search and one call, share of required points answered | 71% against 50%, +21.2 points [+13.6, +28.9]; on the 22 cross-lecture questions 62% against 30%, +31.2 [+16.5, +45.1]. The first run gave +22.2 and +27.3 |
+| Evidence of the agent's answers falls in a gold time range | 96% of answerable questions (one search: 81%) |
+| Against the whole course in one 200,000-token call (30 questions, two rounds) | $0.0028 against $0.102 per question (about 35×). Counting only verified claims the long context is 17.7 points lower [−30.1, −6.3]; counting everything it says, the two are level (82% against 77%, +4.9 [−4.5, +13.7]). Half of its quotes are not word for word at the cited time, so verification removes 30 points from it and 4 from the agent |
+| A defect the evaluation found, fixed and measured again | slide quotes failed on spacing alone (the OCR runs words together): passing slide quotes 48% → 72%, claims removed by the code checks 11% → 8% (−3.9 points [−6.6, −1.2]); correctness unchanged (+1.1 [−2.8, +5.1]), as predicted before the rerun |
+| The judge layer, checked against blind labels (two model labellers, 96 of 100 in agreement) | it does not earn its place yet: the labellers agree with 78% of what it passes but only 42% to 46% of what it rejects; over three runs it costs 2.1 points of correctness [−4.1, −0.0]. The agent with the code checks only is the better default until it is improved |
+| The agent's course overview written by the real model instead of placeholders | no measurable change (+1.1 points [−2.6, +4.9]): on this course the agent finds what it needs by searching |
 | How soft the levels are | the same answers regraded with one sentence added to the grader's prompt scored 4 to 6 points higher on every system; the differences between systems moved by less |
 
 ![The course library: eleven lectures with the state and time of every step](docs/img/lecturelens-courses.jpg)
